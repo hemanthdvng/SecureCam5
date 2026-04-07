@@ -36,7 +36,7 @@ android {
     }
     
     composeOptions {
-        kotlinCompilerExtensionVersion '1.5.1'
+        kotlinCompilerExtensionVersion '1.5.8'
     }
 
     packagingOptions {
@@ -66,7 +66,7 @@ dependencies {
     kapt 'com.google.dagger:hilt-compiler:2.50'
     implementation 'androidx.hilt:hilt-navigation-compose:1.2.0'
 
-    // DataStore (Replaces SharedPreferences)
+    // DataStore
     implementation 'androidx.datastore:datastore-preferences:1.0.0'
 
     // Room DB
@@ -81,7 +81,7 @@ dependencies {
     implementation "androidx.camera:camera-lifecycle:${camerax_version}"
     implementation "androidx.camera:camera-view:${camerax_version}"
 
-    // AI & ML (LiteRT / Vision)
+    // AI & ML
     implementation 'com.google.mlkit:object-detection:17.0.1'
     implementation 'com.google.mlkit:face-detection:16.1.6'
     implementation 'org.tensorflow:tensorflow-lite:2.14.0'
