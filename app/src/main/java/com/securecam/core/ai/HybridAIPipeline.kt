@@ -1,37 +1,62 @@
 package com.securecam.core.ai
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import com.securecam.ai.LlmVisionAnalyzer
 import com.securecam.data.repository.EventRepository
 import com.securecam.data.repository.SecurityEvent
+import com.securecam.data.repository.SettingsRepository
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import java.util.concurrent.Executors
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class HybridAIPipeline @Inject constructor(
-    private val eventRepository: EventRepository
+    @ApplicationContext private val context: Context,
+    private val eventRepository: EventRepository,
+    private val settingsRepository: SettingsRepository
 ) {
     private val TAG = "HybridAIPipeline"
     
-    // Dedicated AI Dispatcher to prevent UI blocks
     private val aiDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private val aiScope = CoroutineScope(aiDispatcher + SupervisorJob())
     
+    // Injecting the actual LLM Engine from Phase 2
+    private val llmAnalyzer = LlmVisionAnalyzer(context)
+    
     private var isLlmBusy = false
+    private var isLlmInitialized = false
+    private var lastTriggerTime = 0L
+
+    init {
+        // Initialize the heavy model asynchronously when the pipeline starts
+        llmAnalyzer.initialize { result ->
+            if (result is LlmVisionAnalyzer.InitResult.Success) {
+                isLlmInitialized = true
+                Log.d(TAG, "Gemma 4B Model Loaded and Ready!")
+            } else {
+                Log.e(TAG, "Gemma 4B Failed to load: $result")
+            }
+        }
+    }
 
     fun processFrame(bitmap: Bitmap) {
-        // Run lightweight checks first (YOLO / Face Detection)
         aiScope.launch {
             try {
+                val llmEnabled = settingsRepository.isLlmEnabled.first()
+                
+                // Run lightweight scan first
                 val hasAnomaly = performLightweightScan(bitmap)
                 
-                // If anomaly detected AND LLM is free, trigger heavy LLM analysis
-                if (hasAnomaly && !isLlmBusy) {
+                // If anomaly detected, LLM is enabled, ready, and not currently processing...
+                if (hasAnomaly && llmEnabled && isLlmInitialized && !isLlmBusy) {
                     triggerLlmAnalysis(bitmap)
                 } else {
-                    bitmap.recycle() // Clean up memory immediately
+                    bitmap.recycle() // Prevent memory leaks!
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Frame processing error", e)
@@ -41,30 +66,42 @@ class HybridAIPipeline @Inject constructor(
     }
 
     private suspend fun performLightweightScan(bitmap: Bitmap): Boolean {
-        // TODO: Implement ML Kit / YOLO integration here.
-        // For the skeleton, we simulate a motion/anomaly detection.
-        return true 
+        // Simulated YOLO trigger: Fires once every 15 seconds to grab a snapshot
+        val now = System.currentTimeMillis()
+        if (now - lastTriggerTime > 15000) {
+            lastTriggerTime = now
+            return true
+        }
+        return false 
     }
 
     private suspend fun triggerLlmAnalysis(bitmap: Bitmap) {
         isLlmBusy = true
-        Log.d(TAG, "LLM Analysis Triggered...")
+        Log.d(TAG, "Anomaly detected. Passing frame to Gemma 4B...")
         
-        try {
-            // TODO: Bind the Gemma 4B LiteRT engine here
-            // Simulate LLM Processing time
-            delay(1500) 
-            
-            val insight = "LLM Insight: Unidentified person detected. Generating semantic report..."
-            eventRepository.emitEvent(SecurityEvent(
-                type = "LLM_INSIGHT",
-                description = insight,
-                confidence = 0.90f
-            ))
-            
-        } finally {
-            bitmap.recycle()
-            isLlmBusy = false
+        // Suspend the coroutine while the callback-based LLM does its thinking
+        suspendCancellableCoroutine<Unit> { continuation ->
+            llmAnalyzer.analyze(
+                bitmap = bitmap,
+                triggerType = LlmVisionAnalyzer.TRIGGER_OBJECT,
+                onToken = { /* We can pipe real-time tokens to UI later if desired */ },
+                onDone = { text ->
+                    if (text.isNotBlank()) {
+                        eventRepository.emitEvent(SecurityEvent(
+                            type = "LLM_INSIGHT",
+                            description = text,
+                            confidence = 0.95f
+                        ))
+                    }
+                    isLlmBusy = false
+                    if (continuation.isActive) continuation.resume(Unit)
+                },
+                onError = { err ->
+                    Log.e(TAG, "LLM inference failed: $err")
+                    isLlmBusy = false
+                    if (continuation.isActive) continuation.resume(Unit)
+                }
+            )
         }
     }
 }
