@@ -32,12 +32,17 @@ class HybridAIPipeline @Inject constructor(
     private var lastTriggerTime = 0L
 
     init {
-        // Fix: Added explicit type inference 'result: LlmVisionAnalyzer.InitResult' for Kotlin 2.1
+        reinitialize()
+    }
+
+    fun reinitialize() {
+        Log.d(TAG, "Attempting to initialize LLM Engine...")
         llmAnalyzer.initialize { result: LlmVisionAnalyzer.InitResult ->
             if (result is LlmVisionAnalyzer.InitResult.Success) {
                 isLlmInitialized = true
                 Log.d(TAG, "Gemma 4B Model Loaded and Ready!")
             } else {
+                isLlmInitialized = false
                 Log.e(TAG, "Gemma 4B Failed to load: $result")
             }
         }
@@ -47,10 +52,21 @@ class HybridAIPipeline @Inject constructor(
         aiScope.launch {
             try {
                 val llmEnabled = settingsRepository.isLlmEnabled.first()
-                val hasAnomaly = performLightweightScan(bitmap)
+                val hasAnomaly = performLightweightScan(bitmap) // Removed parameter since it doesn't need it yet, but keeping structure
                 
-                if (hasAnomaly && llmEnabled && isLlmInitialized && !isLlmBusy) {
-                    triggerLlmAnalysis(bitmap)
+                if (hasAnomaly) {
+                    if (!llmEnabled) {
+                        Log.d(TAG, "Anomaly detected, but LLM is disabled in settings.")
+                        bitmap.recycle()
+                    } else if (!isLlmInitialized) {
+                        Log.d(TAG, "Anomaly detected, but LLM is NOT INITIALIZED (Missing file?).")
+                        bitmap.recycle()
+                    } else if (isLlmBusy) {
+                        Log.d(TAG, "Anomaly detected, but LLM is busy.")
+                        bitmap.recycle()
+                    } else {
+                        triggerLlmAnalysis(bitmap)
+                    }
                 } else {
                     bitmap.recycle() // Prevent memory leaks!
                 }
@@ -62,6 +78,7 @@ class HybridAIPipeline @Inject constructor(
     }
 
     private suspend fun performLightweightScan(bitmap: Bitmap): Boolean {
+        // Simulated YOLO trigger: Fires once every 15 seconds to grab a snapshot
         val now = System.currentTimeMillis()
         if (now - lastTriggerTime > 15000) {
             lastTriggerTime = now
@@ -78,8 +95,8 @@ class HybridAIPipeline @Inject constructor(
             llmAnalyzer.analyze(
                 bitmap = bitmap,
                 triggerType = LlmVisionAnalyzer.TRIGGER_OBJECT,
-                onToken = { token: String -> }, // Fix: explicit type
-                onDone = { text: String -> // Fix: explicit type
+                onToken = { token: String -> },
+                onDone = { text: String -> 
                     if (text.isNotBlank()) {
                         eventRepository.emitEvent(SecurityEvent(
                             type = "LLM_INSIGHT",
@@ -90,7 +107,7 @@ class HybridAIPipeline @Inject constructor(
                     isLlmBusy = false
                     if (continuation.isActive) continuation.resume(Unit)
                 },
-                onError = { err: String -> // Fix: explicit type
+                onError = { err: String -> 
                     Log.e(TAG, "LLM inference failed: $err")
                     isLlmBusy = false
                     if (continuation.isActive) continuation.resume(Unit)
