@@ -19,7 +19,12 @@ fun MainScreen(navController: NavController) {
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                ),
+                actions = {
+                    TextButton(onClick = { navController.navigate("settings") }) {
+                        Text("⚙️ Settings")
+                    }
+                }
             )
         }
     ) { paddingValues ->
@@ -41,9 +46,7 @@ fun MainScreen(navController: NavController) {
             
             ElevatedCard(
                 onClick = { navController.navigate("camera") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(120.dp)
+                modifier = Modifier.fillMaxWidth().height(120.dp)
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -57,10 +60,8 @@ fun MainScreen(navController: NavController) {
             Spacer(modifier = Modifier.height(24.dp))
             
             ElevatedCard(
-                onClick = { /* TODO: Navigate to Viewer */ },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(120.dp)
+                onClick = { navController.navigate("viewer") },
+                modifier = Modifier.fillMaxWidth().height(120.dp)
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
