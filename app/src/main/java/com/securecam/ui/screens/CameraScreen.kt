@@ -35,6 +35,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
 import javax.inject.Inject
 
@@ -56,13 +57,11 @@ class CameraViewModel @Inject constructor(
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
     fun processImageProxy(image: ImageProxy) {
         try {
-            // FIX: Natively convert YUV ImageProxy to ARGB Bitmap
             val bitmap = image.toBitmap()
             aiPipeline.processFrame(bitmap)
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            // ALWAYS close the proxy to prevent camera freezing
             image.close()
         }
     }
@@ -71,6 +70,10 @@ class CameraViewModel @Inject constructor(
 @Composable
 fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hiltViewModel()) {
     val latestEvent by viewModel.latestEvent.collectAsState()
+    
+    // UI State for the auto-dismissing popup
+    var displayEvent by remember { mutableStateOf<SecurityEvent?>(null) }
+    
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     
@@ -85,6 +88,15 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
 
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    // Auto-dismiss the notification after 5 seconds
+    LaunchedEffect(latestEvent) {
+        if (latestEvent != null) {
+            displayEvent = latestEvent
+            delay(5000)
+            displayEvent = null
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -107,7 +119,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                         val analyzerExecutor = Executors.newSingleThreadExecutor()
                         val imageAnalysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            // Explicitly request RGBA for easy Bitmap conversion
                             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                             .build()
                             .also {
@@ -130,7 +141,8 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             )
         }
 
-        latestEvent?.let { event ->
+        // Animated Notification Overlay
+        displayEvent?.let { event ->
             val pillColor = if (event.confidence > 0.8f) Color(0xFFD32F2F) else Color(0xFF1976D2)
             Card(
                 shape = RoundedCornerShape(16.dp),
