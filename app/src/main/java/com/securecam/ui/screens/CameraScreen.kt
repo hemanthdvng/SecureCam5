@@ -2,8 +2,6 @@ package com.securecam.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,7 +37,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 import javax.inject.Inject
-import java.nio.ByteBuffer
 
 @HiltViewModel
 class CameraViewModel @Inject constructor(
@@ -56,17 +53,18 @@ class CameraViewModel @Inject constructor(
         }
     }
 
-    // Convert ImageProxy to Bitmap and send to AI Engine
+    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
     fun processImageProxy(image: ImageProxy) {
-        val buffer: ByteBuffer = image.planes[0].buffer
-        val bytes = ByteArray(buffer.capacity())
-        buffer.get(bytes)
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, null)
-        
-        if (bitmap != null) {
+        try {
+            // FIX: Natively convert YUV ImageProxy to ARGB Bitmap
+            val bitmap = image.toBitmap()
             aiPipeline.processFrame(bitmap)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            // ALWAYS close the proxy to prevent camera freezing
+            image.close()
         }
-        image.close()
     }
 }
 
@@ -102,15 +100,15 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     cameraProviderFuture.addListener({
                         val cameraProvider = cameraProviderFuture.get()
                         
-                        // 1. Setup Preview
                         val preview = Preview.Builder().build().also {
                             it.setSurfaceProvider(previewView.surfaceProvider)
                         }
 
-                        // 2. Setup AI Image Analysis (This feeds frames to HybridAIPipeline)
                         val analyzerExecutor = Executors.newSingleThreadExecutor()
                         val imageAnalysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            // Explicitly request RGBA for easy Bitmap conversion
+                            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                             .build()
                             .also {
                                 it.setAnalyzer(analyzerExecutor) { imageProxy ->
