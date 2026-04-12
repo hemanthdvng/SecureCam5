@@ -15,6 +15,7 @@ import com.securecam.data.local.LogDao
 import com.securecam.data.local.SecurityLogEntity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -25,7 +26,12 @@ import javax.inject.Inject
 class LogsViewModel @Inject constructor(
     private val logDao: LogDao
 ) : ViewModel() {
-    val logs = logDao.getAllLogs().stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    // FIX: Explicitly typed StateFlow to prevent KAPT from generating unresolved java stubs
+    val logs: StateFlow<List<SecurityLogEntity>> = logDao.getAllLogs().stateIn(
+        scope = viewModelScope, 
+        started = SharingStarted.Lazily, 
+        initialValue = emptyList<SecurityLogEntity>()
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -51,7 +57,7 @@ fun LogsScreen(navController: NavController, viewModel: LogsViewModel = hiltView
                 items(logs) { log ->
                     Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text(text = dateFormat.format(Date(log.timestamp)), style = MaterialTheme.typography.labelSmall)
+                            Text(text = dateFormat.format(Date(log.logTime)), style = MaterialTheme.typography.labelSmall)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(text = log.type, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
                             Spacer(modifier = Modifier.height(4.dp))
