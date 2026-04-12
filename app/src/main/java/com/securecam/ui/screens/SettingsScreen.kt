@@ -90,14 +90,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f)) }
     var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f)) }
+    var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", true)) }
     
     var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
-    
-    var tgBotToken by remember { mutableStateOf(prefs.getString("tg_bot_token", "") ?: "") }
-    var tgChatId by remember { mutableStateOf(prefs.getString("tg_chat_id", "") ?: "") }
-    var waWebhookUrl by remember { mutableStateOf(prefs.getString("wa_webhook_url", "") ?: "") }
 
     var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
     var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
@@ -129,32 +126,26 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
-            
-            Text("External Push Alerts (Webhooks)", style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = tgBotToken, onValueChange = { tgBotToken = it; prefs.edit().putString("tg_bot_token", it).apply() }, label = { Text("Telegram Bot Token") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = tgChatId, onValueChange = { tgChatId = it; prefs.edit().putString("tg_chat_id", it).apply() }, label = { Text("Numeric Telegram Chat ID") }, modifier = Modifier.fillMaxWidth())
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = waWebhookUrl, onValueChange = { waWebhookUrl = it; prefs.edit().putString("wa_webhook_url", it).apply() }, label = { Text("WhatsApp Webhook URL") }, modifier = Modifier.fillMaxWidth())
-
-            Spacer(modifier = Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(24.dp))
 
             Text("AI Engine Preferences", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(16.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge)
                     Text("Current model: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(checked = llmEnabled, onCheckedChange = { viewModel.toggleLlm(it) })
+            }
+            
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Verbose Debug Mode", style = MaterialTheme.typography.bodyLarge)
+                    Text("Show 'CLEAR' safe scans in UI log", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(checked = debugMode, onCheckedChange = { 
+                    debugMode = it; prefs.edit().putBoolean("debug_mode", it).apply() 
+                })
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -180,23 +171,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             
             Text("Analyze 1 frame every: ${scanInterval.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
-            Slider(
-                value = scanInterval,
-                onValueChange = { scanInterval = it },
-                onValueChangeFinished = { prefs.edit().putFloat("scan_interval_sec", scanInterval).apply() },
-                valueRange = 1f..60f,
-                steps = 58 
-            )
+            Slider(value = scanInterval, onValueChange = { scanInterval = it }, onValueChangeFinished = { prefs.edit().putFloat("scan_interval_sec", scanInterval).apply() }, valueRange = 1f..60f, steps = 58)
 
             Spacer(modifier = Modifier.height(16.dp))
             Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
-            Slider(
-                value = confidenceThreshold,
-                onValueChange = { confidenceThreshold = it },
-                onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() },
-                valueRange = 0.1f..1.0f,
-                steps = 90
-            )
+            Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.1f..1.0f, steps = 90)
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
@@ -210,11 +189,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt") }, modifier = Modifier.fillMaxWidth())
 
             Spacer(modifier = Modifier.height(24.dp))
-            Button(
-                onClick = { filePicker.launch(arrayOf("*/*")) },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !viewModel.isImporting
-            ) {
+            Button(onClick = { filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.isImporting) {
                 Text(if (viewModel.isImporting) "Loading Model..." else "Select New Model")
             }
             Spacer(modifier = Modifier.height(48.dp))
