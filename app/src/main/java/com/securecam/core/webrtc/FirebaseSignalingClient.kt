@@ -13,6 +13,7 @@ import com.google.firebase.database.ValueEventListener
 class FirebaseSignalingClient(context: Context, private val role: String) {
     private val TAG = "SignalingClient"
     private var database: FirebaseDatabase? = null
+    private val initTime = System.currentTimeMillis()
     
     var onConnected: (() -> Unit)? = null
     var onJoinReceived: (() -> Unit)? = null
@@ -54,11 +55,13 @@ class FirebaseSignalingClient(context: Context, private val role: String) {
     }
 
     private fun listenForSignals() {
-        // We use ChildEventListener and push() to handle rapid, overlapping ICE Candidate arrays safely
         database?.getReference("securecam/signals")?.addChildEventListener(object : ChildEventListener {
             override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
                 val sender = snapshot.child("sender").getValue(String::class.java)
-                if (sender == role) return // Ignore signals sent by ourselves
+                val timestamp = snapshot.child("timestamp").getValue(Long::class.java) ?: 0L
+                
+                // CRASH FIX: Ignore historical Ghost Signals from before this app instance opened
+                if (sender == role || timestamp < initTime - 10000) return 
 
                 val type = snapshot.child("type").getValue(String::class.java)
                 val sdp = snapshot.child("sdp").getValue(String::class.java)
@@ -76,7 +79,12 @@ class FirebaseSignalingClient(context: Context, private val role: String) {
     }
 
     fun sendSignal(type: String, sdp: String = "") {
-        val payload = mapOf("type" to type, "sdp" to sdp, "sender" to role)
+        val payload = mapOf(
+            "type" to type, 
+            "sdp" to sdp, 
+            "sender" to role,
+            "timestamp" to System.currentTimeMillis()
+        )
         database?.getReference("securecam/signals")?.push()?.setValue(payload)
     }
 
