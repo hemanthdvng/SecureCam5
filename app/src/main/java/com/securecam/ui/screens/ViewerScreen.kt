@@ -17,12 +17,17 @@ import com.securecam.core.webrtc.FirebaseSignalingClient
 fun ViewerScreen(navController: NavController) {
     val context = LocalContext.current
     var signalClient by remember { mutableStateOf<FirebaseSignalingClient?>(null) }
-    var streamStatus by remember { mutableStateOf("Waiting for Firebase Config...") }
+    var streamStatus by remember { mutableStateOf("Initializing Firebase...") }
     var latestTelemetry by remember { mutableStateOf("No AI Insights yet.") }
 
     DisposableEffect(Unit) {
         signalClient = FirebaseSignalingClient(context).apply {
-            onOfferReceived = { streamStatus = "Offer Received from Camera!" }
+            onConnected = { streamStatus = "Firebase Connected. Ready to Join!" }
+            onOfferReceived = { sdp -> 
+                streamStatus = "Offer Received! Sending Answer..." 
+                sendSignal("ANSWER", "viewer_sdp_answer")
+                streamStatus = "WebRTC Handshake Complete! (Video Track Pending)"
+            }
         }
         onDispose { }
     }
@@ -39,7 +44,7 @@ fun ViewerScreen(navController: NavController) {
             
             Column(modifier = Modifier.align(Alignment.TopCenter).padding(16.dp)) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
-                    Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(8.dp))
+                    Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(16.dp))
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99D32F2F))) {
@@ -48,7 +53,10 @@ fun ViewerScreen(navController: NavController) {
             }
 
             Button(
-                onClick = { signalClient?.sendSignal("JOIN", "test_sdp_request") },
+                onClick = { 
+                    streamStatus = "Sending JOIN signal..."
+                    signalClient?.sendSignal("JOIN") 
+                },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp)
             ) {
                 Text("Join Stream")
