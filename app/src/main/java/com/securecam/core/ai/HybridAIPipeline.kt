@@ -66,7 +66,6 @@ class HybridAIPipeline @Inject constructor(
                         "timestamp" to System.currentTimeMillis(),
                         "text" to description
                     )
-                    // Push to the new alerts node
                     db.getReference("securecam/alerts").push().setValue(payload)
                 }
             } catch (e: Exception) { Log.e(TAG, "Firebase Alert Error", e) }
@@ -82,7 +81,16 @@ class HybridAIPipeline @Inject constructor(
         val percentReq = (confThreshold * 100).toInt()
         
         val basePrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
-        val enforcedPrompt = "$basePrompt ONLY report if you are at least $percentReq% confident there is a distinct threat or anomaly. Otherwise reply 'CLEAR'."
+        
+        // DYNAMIC SUPPRESSION LOGIC:
+        // If the slider is > 0, enforce the strict threat check.
+        // If the slider is exactly 0, remove the check so it narrates everything.
+        val enforcedPrompt = if (percentReq > 0) {
+            "$basePrompt ONLY report if you are at least $percentReq% confident there is a distinct threat or anomaly. Otherwise reply 'CLEAR'."
+        } else {
+            basePrompt
+        }
+        
         val usrPrompt = prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: ""
 
         try {
