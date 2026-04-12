@@ -33,22 +33,28 @@ class LlmVisionAnalyzer(private val context: Context) {
     }
 
     fun close() {
-        Log.d(TAG, "Closing LLM Engine and freeing GPU VRAM...")
-        initialized.set(false)
-        busy.set(false)
-        try {
-            engine?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing engine: ${e.message}")
-        } finally {
-            engine = null
+        Log.d(TAG, "Queuing engine shutdown...")
+        // FIX 1: Queue the shutdown on the same thread as inference to prevent native SIGSEGV collisions
+        llmScope.launch {
+            Log.d(TAG, "Safely closing LLM Engine and freeing hardware memory...")
+            initialized.set(false)
+            busy.set(false)
+            try {
+                engine?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing engine: ${e.message}")
+            } finally {
+                engine = null
+            }
         }
     }
 
     @OptIn(ExperimentalApi::class)
     fun initialize(onResult: (InitResult) -> Unit) {
         llmScope.launch {
-            close() // Always ensure previous zombie engine is dead before booting
+            initialized.set(false)
+            busy.set(false)
+            try { engine?.close() } catch(e: Exception){} finally { engine = null }
 
             val modelFile = LlmModelManager.getInstalledModel(context)
             if (modelFile == null) { 
@@ -100,9 +106,16 @@ class LlmVisionAnalyzer(private val context: Context) {
         onDone: (String) -> Unit,
         onError: (String) -> Unit
     ) {
-        if (!initialized.get() || !busy.compareAndSet(false, true)) {
+        // FIX 2: Explicitly trigger onError if rejected to prevent the pipeline from permanently deadlocking
+        if (!initialized.get()) {
             bitmap.recycle()
+            onError("Engine not initialized yet")
             return 
+        }
+        if (!busy.compareAndSet(false, true)) {
+            bitmap.recycle()
+            onError("Engine is currently busy processing a previous frame")
+            return
         }
 
         llmScope.launch {
