@@ -29,9 +29,12 @@ class HybridAIPipeline @Inject constructor(
     
     private var isLlmBusy = false
     private var isLlmInitialized = false
-    private var lastTriggerTime = 0L
+    private var isLlmEnabledSetting = true
 
     init {
+        aiScope.launch {
+            settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it }
+        }
         reinitialize()
     }
 
@@ -51,45 +54,28 @@ class HybridAIPipeline @Inject constructor(
     fun processFrame(bitmap: Bitmap) {
         aiScope.launch {
             try {
-                val llmEnabled = settingsRepository.isLlmEnabled.first()
-                val hasAnomaly = performLightweightScan(bitmap)
-                
-                if (hasAnomaly) {
-                    if (!llmEnabled) {
-                        Log.d(TAG, "Anomaly detected, but LLM is disabled in settings.")
-                        bitmap.recycle()
-                    } else if (!isLlmInitialized) {
-                        Log.d(TAG, "Anomaly detected, but LLM is NOT INITIALIZED (Missing file?).")
-                        bitmap.recycle()
-                    } else if (isLlmBusy) {
-                        Log.d(TAG, "Anomaly detected, but LLM is busy.")
-                        bitmap.recycle()
-                    } else {
-                        triggerLlmAnalysis(bitmap)
-                    }
+                if (!isLlmEnabledSetting) {
+                    Log.d(TAG, "Anomaly detected, but LLM is disabled.")
+                    bitmap.recycle()
+                } else if (!isLlmInitialized) {
+                    Log.d(TAG, "Anomaly detected, but LLM NOT INITIALIZED.")
+                    bitmap.recycle()
+                } else if (isLlmBusy) {
+                    Log.d(TAG, "Anomaly detected, but LLM is busy.")
+                    bitmap.recycle()
                 } else {
-                    bitmap.recycle() // Prevent memory leaks!
+                    triggerLlmAnalysis(bitmap)
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) { 
                 Log.e(TAG, "Frame processing error", e)
                 bitmap.recycle()
             }
         }
     }
 
-    private suspend fun performLightweightScan(bitmap: Bitmap): Boolean {
-        // Simulated YOLO trigger: Fires once every 15 seconds to grab a snapshot
-        val now = System.currentTimeMillis()
-        if (now - lastTriggerTime > 15000) {
-            lastTriggerTime = now
-            return true
-        }
-        return false 
-    }
-
     private suspend fun triggerLlmAnalysis(bitmap: Bitmap) {
         isLlmBusy = true
-        Log.d(TAG, "Anomaly detected. Passing frame to Gemma 4B...")
+        Log.d(TAG, "Anomaly detected. Passing frame to Gemma...")
         
         suspendCancellableCoroutine<Unit> { continuation ->
             llmAnalyzer.analyze(
