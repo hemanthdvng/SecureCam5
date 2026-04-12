@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 import javax.inject.Inject
 
 @HiltViewModel
@@ -50,10 +51,7 @@ class SettingsViewModel @Inject constructor(
                         input.copyTo(output)
                     }
                 }
-                
-                // Reboot the AI Pipeline now that the file is physically present!
                 aiPipeline.reinitialize()
-                
                 withContext(Dispatchers.Main) {
                     Toast.makeText(context, "Model Imported Successfully! AI Ready.", Toast.LENGTH_LONG).show()
                 }
@@ -73,7 +71,10 @@ class SettingsViewModel @Inject constructor(
 fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = hiltViewModel()) {
     val llmEnabled by viewModel.isLlmEnabled.collectAsState()
     val context = LocalContext.current
+    val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     
+    var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 1f)) }
+
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importModel(it, context) }
     }
@@ -82,15 +83,13 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
         topBar = {
             TopAppBar(
                 title = { Text("Settings") },
-                navigationIcon = {
-                    TextButton(onClick = { navController.popBackStack() }) { Text("Back") }
-                }
+                navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }
             )
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding).padding(16.dp)) {
             
-            Text("AI Preferences", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+            Text("AI Engine Preferences", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(16.dp))
 
             Row(
@@ -109,6 +108,25 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
             
+            Text("Performance & Battery", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Text("Analyze 1 frame every: ${scanInterval.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
+            Slider(
+                value = scanInterval,
+                onValueChange = { scanInterval = it },
+                onValueChangeFinished = {
+                    prefs.edit().putFloat("scan_interval_sec", scanInterval).apply()
+                },
+                valueRange = 1f..60f,
+                steps = 58 
+            )
+            Text("Higher intervals save battery and prevent overheating.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
             Text("Model Management", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
             Text("To use local AI, you must manually import the Gemma .litertlm weights file.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
