@@ -2,6 +2,7 @@ package com.securecam.ui.screens
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,8 +35,25 @@ class SettingsViewModel @Inject constructor(
     private val aiPipeline: HybridAIPipeline
 ) : ViewModel() {
     val isLlmEnabled = repository.isLlmEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    
     var isImporting by mutableStateOf(false)
         private set
+
+    var currentModelName by mutableStateOf("None")
+    var useGpu by mutableStateOf(false)
+
+    fun loadPrefs(context: Context) {
+        val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+        currentModelName = prefs.getString("selected_model", "None") ?: "None"
+        useGpu = prefs.getBoolean("use_gpu", false)
+    }
+
+    fun setGpu(context: Context, enabled: Boolean) {
+        useGpu = enabled
+        context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("use_gpu", enabled).apply()
+        aiPipeline.reinitialize()
+    }
 
     fun toggleLlm(enabled: Boolean) {
         viewModelScope.launch { repository.setLlmEnabled(enabled) }
@@ -45,15 +63,30 @@ class SettingsViewModel @Inject constructor(
         isImporting = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val destFile = File(context.filesDir, "gemma-4b.litertlm")
+                // Dynamically get the real file name
+                var fileName = "custom_model.litertlm"
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (index != -1) fileName = cursor.getString(index)
+                    }
+                }
+
+                val destFile = File(context.filesDir, fileName)
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     destFile.outputStream().use { output ->
                         input.copyTo(output)
                     }
                 }
+                
+                context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                    .edit().putString("selected_model", fileName).apply()
+                
+                currentModelName = fileName
                 aiPipeline.reinitialize()
+                
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "Model Imported Successfully! AI Ready.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Model $fileName Loaded!", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -79,6 +112,10 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
         uri?.let { viewModel.importModel(it, context) }
     }
 
+    LaunchedEffect(Unit) {
+        viewModel.loadPrefs(context)
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -98,10 +135,22 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Enable Gemma 4B LLM", style = MaterialTheme.typography.bodyLarge)
-                    Text("Uses local GPU to describe threats", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge)
+                    Text("Current model: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(checked = llmEnabled, onCheckedChange = { viewModel.toggleLlm(it) })
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Use GPU Acceleration", style = MaterialTheme.typography.bodyLarge)
+                    Text("Warning: Turn off if the camera crashes!", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                Switch(checked = viewModel.useGpu, onCheckedChange = { viewModel.setGpu(context, it) })
             }
             
             Spacer(modifier = Modifier.height(24.dp))
@@ -115,21 +164,18 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Slider(
                 value = scanInterval,
                 onValueChange = { scanInterval = it },
-                onValueChangeFinished = {
-                    prefs.edit().putFloat("scan_interval_sec", scanInterval).apply()
-                },
+                onValueChangeFinished = { prefs.edit().putFloat("scan_interval_sec", scanInterval).apply() },
                 valueRange = 1f..60f,
                 steps = 58 
             )
-            Text("Higher intervals save battery and prevent overheating.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
-            Text("Model Management", style = MaterialTheme.typography.titleMedium)
+            Text("Dynamic Model Loading", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("To use local AI, you must manually import the Gemma .litertlm weights file.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Select any .litertlm or .bin model from your phone's storage to use as the AI brain.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(modifier = Modifier.height(16.dp))
             
             Button(
@@ -137,7 +183,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !viewModel.isImporting
             ) {
-                Text(if (viewModel.isImporting) "Copying File (Please Wait)..." else "Import Local Model")
+                Text(if (viewModel.isImporting) "Loading Model (Please Wait)..." else "Select New Model")
             }
         }
     }
