@@ -23,10 +23,9 @@ class EventRepository @Inject constructor(
     suspend fun emitEvent(event: SecurityEvent) {
         _securityEvents.emit(event)
         
-        // Save the event permanently
         logDao.insertLog(
             SecurityLogEntity(
-                timestamp = System.currentTimeMillis(),
+                logTime = System.currentTimeMillis(),
                 type = event.type,
                 description = event.description,
                 confidence = event.confidence
