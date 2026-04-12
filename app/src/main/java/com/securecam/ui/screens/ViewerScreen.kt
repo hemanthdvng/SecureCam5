@@ -13,6 +13,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavController
 import com.google.gson.Gson
 import com.securecam.core.webrtc.*
+import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
@@ -47,6 +48,20 @@ fun ViewerScreen(navController: NavController) {
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
                 val track = receiver?.track() as? VideoTrack
                 track?.addSink(remoteRenderer)
+            }
+            // Bind to the incoming AI Telemetry channel
+            override fun onDataChannel(dc: DataChannel?) {
+                dc?.registerObserver(object : DataChannel.Observer {
+                    override fun onBufferedAmountChange(p0: Long) {}
+                    override fun onStateChange() {}
+                    override fun onMessage(buffer: DataChannel.Buffer?) {
+                        buffer?.data?.let { byteBuffer ->
+                            val bytes = ByteArray(byteBuffer.remaining())
+                            byteBuffer.get(bytes)
+                            latestTelemetry = String(bytes, Charsets.UTF_8)
+                        }
+                    }
+                })
             }
         }
         
