@@ -2,6 +2,8 @@ package com.securecam.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,6 +24,9 @@ import org.webrtc.RtpReceiver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,7 +35,9 @@ fun ViewerScreen(navController: NavController) {
     val remoteRenderer = remember { SurfaceViewRenderer(context) }
     var signalClient by remember { mutableStateOf<FirebaseSignalingClient?>(null) }
     var streamStatus by remember { mutableStateOf("Initializing Viewport...") }
-    var latestTelemetry by remember { mutableStateOf("No AI Insights yet.") }
+    
+    // Converted to a scrolling history list
+    val alertHistory = remember { mutableStateListOf<String>() }
 
     DisposableEffect(Unit) {
         val rtcManager = WebRTCManager(context).apply { initRenderer(remoteRenderer) }
@@ -49,7 +56,6 @@ fun ViewerScreen(navController: NavController) {
                 val track = receiver?.track() as? VideoTrack
                 track?.addSink(remoteRenderer)
             }
-            // Bind to the incoming AI Telemetry channel
             override fun onDataChannel(dc: DataChannel?) {
                 dc?.registerObserver(object : DataChannel.Observer {
                     override fun onBufferedAmountChange(p0: Long) {}
@@ -58,7 +64,12 @@ fun ViewerScreen(navController: NavController) {
                         buffer?.data?.let { byteBuffer ->
                             val bytes = ByteArray(byteBuffer.remaining())
                             byteBuffer.get(bytes)
-                            latestTelemetry = String(bytes, Charsets.UTF_8)
+                            val text = String(bytes, Charsets.UTF_8)
+                            
+                            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                            // Add new alert to the top of the UI list
+                            alertHistory.add(0, "[$timeStr] $text")
+                            if (alertHistory.size > 50) alertHistory.removeLast() // Keep memory clean
                         }
                     }
                 })
@@ -109,14 +120,25 @@ fun ViewerScreen(navController: NavController) {
             
             AndroidView(factory = { remoteRenderer }, modifier = Modifier.fillMaxSize())
             
-            Column(modifier = Modifier.align(Alignment.TopCenter).padding(16.dp)) {
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
                     Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(8.dp))
                 }
-                Spacer(modifier = Modifier.height(8.dp))
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0x99D32F2F))) {
-                    Text(text = "AI: $latestTelemetry", color = Color.White, modifier = Modifier.padding(16.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Scrolling Alert History
+                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    items(alertHistory) { alert ->
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xCCD32F2F)),
+                            modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
+                        ) {
+                            Text(text = alert, color = Color.White, modifier = Modifier.padding(12.dp))
+                        }
+                    }
                 }
+                
+                Spacer(modifier = Modifier.height(72.dp)) // Leave room for button
             }
 
             Button(
@@ -124,7 +146,7 @@ fun ViewerScreen(navController: NavController) {
                     streamStatus = "Sending JOIN signal..."
                     signalClient?.sendSignal("JOIN") 
                 },
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp)
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)
             ) {
                 Text("Join Stream")
             }
