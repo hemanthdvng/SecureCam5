@@ -27,8 +27,11 @@ import com.securecam.core.ai.HybridAIPipeline
 import com.securecam.core.webrtc.*
 import com.securecam.data.repository.EventRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
@@ -54,10 +57,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     
     val localRenderer = remember { SurfaceViewRenderer(context) }
     var streamStatus by remember { mutableStateOf("Initializing Hardware...") }
-    
-    // UI SYNC: Use a scrolling history list just like the Viewer app
     val alertHistory = remember { mutableStateListOf<String>() }
-    
     var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
 
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -66,7 +66,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPermission = it }
     LaunchedEffect(Unit) { if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA) }
 
-    // Frame Capture Loop
     LaunchedEffect(Unit) {
         while(isActive) {
             delay(scanIntervalMs)
@@ -77,17 +76,14 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         }
     }
 
-    // Telemetry Broadcast & Local Logging Loop
     LaunchedEffect(Unit) {
         viewModel.eventRepository.securityEvents.collect { event ->
             val text = event.description
             val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
             
-            // Add the new alert to the Camera's local screen
             alertHistory.add(0, "[$timeStr] $text")
             if (alertHistory.size > 50) alertHistory.removeLast()
             
-            // Push text through WebRTC to Viewer
             dataChannel?.let { dc ->
                 if (dc.state() == DataChannel.State.OPEN) {
                     val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8))
@@ -99,12 +95,11 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
 
     DisposableEffect(Unit) {
         viewModel.aiPipeline.start()
-        
         val rtcManager = WebRTCManager(context).apply { initRenderer(localRenderer) }
         val signalClient = FirebaseSignalingClient(context, "CAMERA")
         
         signalClient.clearSignals() 
-        signalClient.onConnected = { streamStatus = "Firebase Connected. Waiting for Viewer..." }
+        signalClient.onConnected = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Firebase Connected. Waiting for Viewer..." } }
         
         val observer = object : SimplePeerConnectionObserver() {
             override fun onIceCandidate(candidate: IceCandidate?) {
@@ -116,14 +111,12 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         }
         
         val peerConnection = rtcManager.createPeerConnection(observer)
-        
         dataChannel = peerConnection?.createDataChannel("telemetry", DataChannel.Init())
-
         val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
         localTrack?.let { peerConnection?.addTrack(it, listOf("stream_1")) }
 
         signalClient.onJoinReceived = {
-            streamStatus = "Viewer JOIN detected! Gathering ICE & Sending Offer..."
+            CoroutineScope(Dispatchers.Main).launch { streamStatus = "Viewer JOIN detected! Gathering ICE..." }
             peerConnection?.createOffer(object : SimpleSdpObserver() {
                 override fun onCreateSuccess(sdp: SessionDescription?) {
                     sdp?.let {
@@ -139,7 +132,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             val data = Gson().fromJson(sdpStr, SdpData::class.java)
             val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(data.type), data.sdp)
             peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
-            streamStatus = "LIVE STREAM ACTIVE"
+            CoroutineScope(Dispatchers.Main).launch { streamStatus = "LIVE STREAM ACTIVE" }
         }
 
         signalClient.onIceCandidateReceived = { iceStr ->
@@ -157,7 +150,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        
         AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
 
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
@@ -166,19 +158,19 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
             Spacer(modifier = Modifier.height(16.dp))
             
-            // Scrolling Alert History
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 items(alertHistory) { alert ->
+                    val isSafe = alert.contains("CLEAR")
+                    val bgColor = if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xCCD32F2F)),
+                        colors = CardDefaults.cardColors(containerColor = bgColor),
                         modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
                     ) {
                         Text(text = alert, color = Color.White, modifier = Modifier.padding(12.dp))
                     }
                 }
             }
-            
-            Spacer(modifier = Modifier.height(72.dp)) // Leave room for button
+            Spacer(modifier = Modifier.height(72.dp))
         }
 
         Button(
