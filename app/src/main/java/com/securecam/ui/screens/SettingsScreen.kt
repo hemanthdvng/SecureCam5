@@ -89,13 +89,12 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f)) }
     var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
+    var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f)) }
     
-    // Firebase Cloud Networking Settings
     var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
     
-    // Webhook Settings
     var tgBotToken by remember { mutableStateOf(prefs.getString("tg_bot_token", "") ?: "") }
     var tgChatId by remember { mutableStateOf(prefs.getString("tg_chat_id", "") ?: "") }
     var waWebhookUrl by remember { mutableStateOf(prefs.getString("wa_webhook_url", "") ?: "") }
@@ -135,7 +134,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = tgBotToken, onValueChange = { tgBotToken = it; prefs.edit().putString("tg_bot_token", it).apply() }, label = { Text("Telegram Bot Token") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = tgChatId, onValueChange = { tgChatId = it; prefs.edit().putString("tg_chat_id", it).apply() }, label = { Text("Telegram Chat ID") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = tgChatId, onValueChange = { tgChatId = it; prefs.edit().putString("tg_chat_id", it).apply() }, label = { Text("Numeric Telegram Chat ID") }, modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = waWebhookUrl, onValueChange = { waWebhookUrl = it; prefs.edit().putString("wa_webhook_url", it).apply() }, label = { Text("WhatsApp Webhook URL") }, modifier = Modifier.fillMaxWidth())
 
@@ -176,35 +175,8 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
-
-            Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(8.dp))
             
-            OutlinedTextField(
-                value = sysPrompt,
-                onValueChange = { 
-                    sysPrompt = it
-                    prefs.edit().putString("prompt_sys", it).apply()
-                },
-                label = { Text("System Prompt") },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = usrPrompt,
-                onValueChange = { 
-                    usrPrompt = it
-                    prefs.edit().putString("prompt_usr", it).apply()
-                },
-                label = { Text("User Prompt") },
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            Text("Performance & Battery", style = MaterialTheme.typography.titleMedium)
+            Text("AI Tuning & Polling", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
             
             Text("Analyze 1 frame every: ${scanInterval.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
@@ -216,10 +188,28 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 steps = 58 
             )
 
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
+            Slider(
+                value = confidenceThreshold,
+                onValueChange = { confidenceThreshold = it },
+                onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() },
+                valueRange = 0.1f..1.0f,
+                steps = 90
+            )
+
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
+            Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            OutlinedTextField(value = sysPrompt, onValueChange = { sysPrompt = it; prefs.edit().putString("prompt_sys", it).apply() }, label = { Text("System Prompt") }, modifier = Modifier.fillMaxWidth())
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt") }, modifier = Modifier.fillMaxWidth())
+
+            Spacer(modifier = Modifier.height(24.dp))
             Button(
                 onClick = { filePicker.launch(arrayOf("*/*")) },
                 modifier = Modifier.fillMaxWidth(),
