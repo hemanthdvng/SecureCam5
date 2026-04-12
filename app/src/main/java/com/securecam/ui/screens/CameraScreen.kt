@@ -8,6 +8,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,6 +36,9 @@ import org.webrtc.PeerConnection
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
 import java.nio.ByteBuffer
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
 
 @HiltViewModel
@@ -49,7 +54,10 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     
     val localRenderer = remember { SurfaceViewRenderer(context) }
     var streamStatus by remember { mutableStateOf("Initializing Hardware...") }
-    var latestTelemetry by remember { mutableStateOf("AI Engine Idle. Waiting for Viewer...") }
+    
+    // UI SYNC: Use a scrolling history list just like the Viewer app
+    val alertHistory = remember { mutableStateListOf<String>() }
+    
     var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
 
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -62,24 +70,27 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     LaunchedEffect(Unit) {
         while(isActive) {
             delay(scanIntervalMs)
-            // Extract a single frame from the WebRTC hardware renderer
             localRenderer.addFrameListener({ bitmap ->
-                // Must copy the bitmap because EglRenderer recycles the original instantly
                 val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
                 viewModel.aiPipeline.processFrame(bmpCopy)
-            }, 0.5f) // Downscale to 50% for much faster AI processing
+            }, 0.5f)
         }
     }
 
-    // Telemetry Broadcast Loop
+    // Telemetry Broadcast & Local Logging Loop
     LaunchedEffect(Unit) {
         viewModel.eventRepository.securityEvents.collect { event ->
-            latestTelemetry = event.description
+            val text = event.description
+            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            
+            // Add the new alert to the Camera's local screen
+            alertHistory.add(0, "[$timeStr] $text")
+            if (alertHistory.size > 50) alertHistory.removeLast()
             
             // Push text through WebRTC to Viewer
             dataChannel?.let { dc ->
                 if (dc.state() == DataChannel.State.OPEN) {
-                    val buffer = ByteBuffer.wrap(event.description.toByteArray(Charsets.UTF_8))
+                    val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8))
                     dc.send(DataChannel.Buffer(buffer, false))
                 }
             }
@@ -106,7 +117,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         
         val peerConnection = rtcManager.createPeerConnection(observer)
         
-        // Create the DataChannel BEFORE sending the Offer
         dataChannel = peerConnection?.createDataChannel("telemetry", DataChannel.Init())
 
         val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
@@ -130,7 +140,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(data.type), data.sdp)
             peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
             streamStatus = "LIVE STREAM ACTIVE"
-            latestTelemetry = "AI Engine Scanning..."
         }
 
         signalClient.onIceCandidateReceived = { iceStr ->
@@ -151,20 +160,31 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         
         AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
 
-        Column(modifier = Modifier.align(Alignment.TopCenter).padding(16.dp)) {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
                 Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(8.dp))
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = Color(0x99D32F2F))) {
-                Text(text = "AI: $latestTelemetry", color = Color.White, modifier = Modifier.padding(16.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // Scrolling Alert History
+            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                items(alertHistory) { alert ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xCCD32F2F)),
+                        modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
+                    ) {
+                        Text(text = alert, color = Color.White, modifier = Modifier.padding(12.dp))
+                    }
+                }
             }
+            
+            Spacer(modifier = Modifier.height(72.dp)) // Leave room for button
         }
 
         Button(
             onClick = { navController.popBackStack() },
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp).height(56.dp).fillMaxWidth(0.6f)
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).height(56.dp).fillMaxWidth(0.6f)
         ) {
             Text("END STREAM", style = MaterialTheme.typography.titleMedium)
         }
