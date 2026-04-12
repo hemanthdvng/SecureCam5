@@ -37,7 +37,6 @@ fun ViewerScreen(navController: NavController) {
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize().background(Color.Black)) {
             
-            // UI Overlay for Telemetry
             Column(modifier = Modifier.align(Alignment.TopCenter).padding(16.dp)) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
                     Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(8.dp))
