@@ -95,6 +95,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
     
+    // Webhook Settings
+    var tgBotToken by remember { mutableStateOf(prefs.getString("tg_bot_token", "") ?: "") }
+    var tgChatId by remember { mutableStateOf(prefs.getString("tg_chat_id", "") ?: "") }
+    var waWebhookUrl by remember { mutableStateOf(prefs.getString("wa_webhook_url", "") ?: "") }
+
     var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
     var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
 
@@ -126,6 +131,18 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
             
+            Text("External Push Alerts (Webhooks)", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = tgBotToken, onValueChange = { tgBotToken = it; prefs.edit().putString("tg_bot_token", it).apply() }, label = { Text("Telegram Bot Token") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = tgChatId, onValueChange = { tgChatId = it; prefs.edit().putString("tg_chat_id", it).apply() }, label = { Text("Telegram Chat ID") }, modifier = Modifier.fillMaxWidth())
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = waWebhookUrl, onValueChange = { waWebhookUrl = it; prefs.edit().putString("wa_webhook_url", it).apply() }, label = { Text("WhatsApp Webhook URL") }, modifier = Modifier.fillMaxWidth())
+
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
             Text("AI Engine Preferences", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(16.dp))
 
