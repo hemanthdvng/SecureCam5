@@ -13,13 +13,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.navigation.NavController
+import com.google.gson.Gson
 import com.securecam.core.ai.HybridAIPipeline
-import com.securecam.core.webrtc.FirebaseSignalingClient
+import com.securecam.core.webrtc.*
 import dagger.hilt.android.lifecycle.HiltViewModel
+import org.webrtc.IceCandidate
+import org.webrtc.MediaConstraints
+import org.webrtc.PeerConnection
+import org.webrtc.SessionDescription
+import org.webrtc.SurfaceViewRenderer
 import javax.inject.Inject
 
 @HiltViewModel
@@ -32,7 +39,8 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     val context = LocalContext.current
     var hasPermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     
-    var streamStatus by remember { mutableStateOf("Initializing Firebase...") }
+    val localRenderer = remember { SurfaceViewRenderer(context) }
+    var streamStatus by remember { mutableStateOf("Initializing Hardware...") }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPermission = it }
     LaunchedEffect(Unit) { if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA) }
@@ -40,24 +48,65 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     DisposableEffect(Unit) {
         viewModel.aiPipeline.start()
         
-        val signalClient = FirebaseSignalingClient(context).apply {
-            onConnected = { streamStatus = "Firebase Connected. Waiting for Viewer..." }
-            onJoinReceived = {
-                streamStatus = "Viewer JOIN detected! Sending Offer..."
-                sendSignal("OFFER", "camera_sdp_offer")
-            }
-            onAnswerReceived = { sdp ->
-                streamStatus = "WebRTC Handshake Complete! (Video Track Pending)"
+        val rtcManager = WebRTCManager(context).apply { initRenderer(localRenderer) }
+        val signalClient = FirebaseSignalingClient(context, "CAMERA")
+        
+        signalClient.clearSignals() // Erase history for new session
+
+        signalClient.onConnected = { streamStatus = "Firebase Connected. Waiting for Viewer..." }
+        
+        val observer = object : SimplePeerConnectionObserver() {
+            override fun onIceCandidate(candidate: IceCandidate?) {
+                candidate?.let {
+                    val json = Gson().toJson(IceCandidateData(it.sdpMid, it.sdpMLineIndex, it.sdp))
+                    signalClient.sendSignal("ICE", json)
+                }
             }
         }
+        
+        val peerConnection = rtcManager.createPeerConnection(observer)
+        val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
+        localTrack?.let { peerConnection?.addTrack(it, listOf("stream_1")) }
 
-        onDispose { viewModel.aiPipeline.stop() }
+        signalClient.onJoinReceived = {
+            streamStatus = "Viewer JOIN detected! Gathering ICE & Sending Offer..."
+            peerConnection?.createOffer(object : SimpleSdpObserver() {
+                override fun onCreateSuccess(sdp: SessionDescription?) {
+                    sdp?.let {
+                        peerConnection.setLocalDescription(SimpleSdpObserver(), it)
+                        val json = Gson().toJson(SdpData(it.type.canonicalForm(), it.description))
+                        signalClient.sendSignal("OFFER", json)
+                    }
+                }
+            }, MediaConstraints())
+        }
+
+        signalClient.onAnswerReceived = { sdpStr ->
+            val data = Gson().fromJson(sdpStr, SdpData::class.java)
+            val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(data.type), data.sdp)
+            peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
+            streamStatus = "LIVE STREAM ACTIVE"
+        }
+
+        signalClient.onIceCandidateReceived = { iceStr ->
+            val data = Gson().fromJson(iceStr, IceCandidateData::class.java)
+            peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp))
+        }
+
+        onDispose {
+            try { localRenderer.release() } catch(e: Exception){}
+            peerConnection?.dispose()
+            rtcManager.dispose()
+            viewModel.aiPipeline.stop()
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Camera Host Mode Active", color = Color.White, style = MaterialTheme.typography.titleLarge)
-            Spacer(modifier = Modifier.height(16.dp))
+        
+        // Native WebRTC Video Surface Overlay
+        AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
+
+        Column(modifier = Modifier.align(Alignment.TopCenter).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
                 Text(streamStatus, color = Color.Green, modifier = Modifier.padding(16.dp))
             }
