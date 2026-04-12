@@ -44,12 +44,11 @@ import javax.inject.Inject
 @HiltViewModel
 class CameraViewModel @Inject constructor(
     private val eventRepository: EventRepository,
-    private val aiPipeline: HybridAIPipeline
+    val aiPipeline: HybridAIPipeline
 ) : ViewModel() {
     
     private val _latestEvent = MutableStateFlow<SecurityEvent?>(null)
     val latestEvent = _latestEvent.asStateFlow()
-
     private var lastAnalyzeTime = 0L
 
     init {
@@ -60,9 +59,8 @@ class CameraViewModel @Inject constructor(
 
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
     fun processImageProxy(image: ImageProxy, context: Context) {
-        // Dynamically read the user's custom frame rate setting
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-        val intervalMs = (prefs.getFloat("scan_interval_sec", 1f) * 1000).toLong()
+        val intervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
 
         val currentTimestamp = System.currentTimeMillis()
         if (currentTimestamp - lastAnalyzeTime < intervalMs) {
@@ -99,6 +97,14 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         onResult = { granted -> hasCameraPermission = granted }
     )
 
+    // LIFECYCLE FIX: Start engine exactly when camera opens, kill it when camera closes
+    DisposableEffect(lifecycleOwner) {
+        viewModel.aiPipeline.start()
+        onDispose {
+            viewModel.aiPipeline.stop()
+        }
+    }
+
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
@@ -123,7 +129,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                     cameraProviderFuture.addListener({
                         val cameraProvider = cameraProviderFuture.get()
-                        
                         val preview = Preview.Builder().build().also {
                             it.setSurfaceProvider(previewView.surfaceProvider)
                         }
@@ -132,7 +137,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                         val imageAnalysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                            // FORCE HARDWARE DOWNSCALE: Massive memory and CPU savings!
                             .setTargetResolution(Size(512, 512)) 
                             .build()
                             .also {
