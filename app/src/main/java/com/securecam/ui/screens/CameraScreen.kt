@@ -51,7 +51,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val rtcManager = WebRTCManager(context).apply { initRenderer(localRenderer) }
         val signalClient = FirebaseSignalingClient(context, "CAMERA")
         
-        signalClient.clearSignals() // Erase history for new session
+        signalClient.clearSignals() 
 
         signalClient.onConnected = { streamStatus = "Firebase Connected. Waiting for Viewer..." }
         
@@ -103,7 +103,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         
-        // Native WebRTC Video Surface Overlay
         AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
 
         Column(modifier = Modifier.align(Alignment.TopCenter).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
