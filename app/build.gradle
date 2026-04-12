@@ -40,7 +40,12 @@ android {
         resources { excludes += ['META-INF/DEPENDENCIES','META-INF/LICENSE'] }
         jniLibs { pickFirsts += ['**/*.so'] }
     }
-    aaptOptions { noCompress "tflite" }
+    aaptOptions { noCompress "tflite", "litertlm" }
+}
+
+// FIX: Required for Dagger Hilt to safely process Room Databases on Kotlin K2
+kapt {
+    correctErrorTypes = true
 }
 
 dependencies {
