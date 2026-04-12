@@ -15,6 +15,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavController
 import com.google.gson.Gson
 import com.securecam.core.webrtc.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
@@ -35,15 +38,13 @@ fun ViewerScreen(navController: NavController) {
     val remoteRenderer = remember { SurfaceViewRenderer(context) }
     var signalClient by remember { mutableStateOf<FirebaseSignalingClient?>(null) }
     var streamStatus by remember { mutableStateOf("Initializing Viewport...") }
-    
-    // Converted to a scrolling history list
     val alertHistory = remember { mutableStateListOf<String>() }
 
     DisposableEffect(Unit) {
         val rtcManager = WebRTCManager(context).apply { initRenderer(remoteRenderer) }
         signalClient = FirebaseSignalingClient(context, "VIEWER")
 
-        signalClient?.onConnected = { streamStatus = "Firebase Connected. Ready to Join!" }
+        signalClient?.onConnected = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Firebase Connected. Ready to Join!" } }
         
         val observer = object : SimplePeerConnectionObserver() {
             override fun onIceCandidate(candidate: IceCandidate?) {
@@ -65,11 +66,12 @@ fun ViewerScreen(navController: NavController) {
                             val bytes = ByteArray(byteBuffer.remaining())
                             byteBuffer.get(bytes)
                             val text = String(bytes, Charsets.UTF_8)
-                            
                             val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                            // Add new alert to the top of the UI list
-                            alertHistory.add(0, "[$timeStr] $text")
-                            if (alertHistory.size > 50) alertHistory.removeLast() // Keep memory clean
+                            
+                            CoroutineScope(Dispatchers.Main).launch {
+                                alertHistory.add(0, "[$timeStr] $text")
+                                if (alertHistory.size > 50) alertHistory.removeLast()
+                            }
                         }
                     }
                 })
@@ -79,7 +81,7 @@ fun ViewerScreen(navController: NavController) {
         val peerConnection = rtcManager.createPeerConnection(observer)
 
         signalClient?.onOfferReceived = { sdpStr -> 
-            streamStatus = "Offer Received! Routing ICE & Sending Answer..." 
+            CoroutineScope(Dispatchers.Main).launch { streamStatus = "Offer Received! Routing ICE..." }
             val data = Gson().fromJson(sdpStr, SdpData::class.java)
             val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(data.type), data.sdp)
             peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
@@ -93,7 +95,7 @@ fun ViewerScreen(navController: NavController) {
                     }
                 }
             }, MediaConstraints())
-            streamStatus = "LIVE STREAM ACTIVE"
+            CoroutineScope(Dispatchers.Main).launch { streamStatus = "LIVE STREAM ACTIVE" }
         }
 
         signalClient?.onIceCandidateReceived = { iceStr ->
@@ -126,11 +128,12 @@ fun ViewerScreen(navController: NavController) {
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                // Scrolling Alert History
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     items(alertHistory) { alert ->
+                        val isSafe = alert.contains("CLEAR")
+                        val bgColor = if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
                         Card(
-                            colors = CardDefaults.cardColors(containerColor = Color(0xCCD32F2F)),
+                            colors = CardDefaults.cardColors(containerColor = bgColor),
                             modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
                         ) {
                             Text(text = alert, color = Color.White, modifier = Modifier.padding(12.dp))
@@ -138,7 +141,7 @@ fun ViewerScreen(navController: NavController) {
                     }
                 }
                 
-                Spacer(modifier = Modifier.height(72.dp)) // Leave room for button
+                Spacer(modifier = Modifier.height(72.dp))
             }
 
             Button(
