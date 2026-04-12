@@ -13,6 +13,8 @@ class FirebaseSignalingClient(context: Context) {
     private val TAG = "SignalingClient"
     private var database: FirebaseDatabase? = null
     
+    var onConnected: (() -> Unit)? = null
+    var onJoinReceived: (() -> Unit)? = null
     var onOfferReceived: ((String) -> Unit)? = null
     var onAnswerReceived: ((String) -> Unit)? = null
 
@@ -33,6 +35,16 @@ class FirebaseSignalingClient(context: Context) {
                     FirebaseApp.initializeApp(context, options)
                 }
                 database = FirebaseDatabase.getInstance()
+                
+                // Track physical connection to Firebase servers
+                database?.getReference(".info/connected")?.addValueEventListener(object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        val connected = snapshot.getValue(Boolean::class.java) ?: false
+                        if (connected) onConnected?.invoke()
+                    }
+                    override fun onCancelled(error: DatabaseError) {}
+                })
+
                 listenForSignals()
             } catch (e: Exception) {
                 Log.e(TAG, "Firebase Manual Init Failed", e)
@@ -46,6 +58,7 @@ class FirebaseSignalingClient(context: Context) {
                 val type = snapshot.child("type").getValue(String::class.java)
                 val sdp = snapshot.child("sdp").getValue(String::class.java)
                 
+                if (type == "JOIN") onJoinReceived?.invoke()
                 if (type == "OFFER" && sdp != null) onOfferReceived?.invoke(sdp)
                 if (type == "ANSWER" && sdp != null) onAnswerReceived?.invoke(sdp)
             }
@@ -53,7 +66,7 @@ class FirebaseSignalingClient(context: Context) {
         })
     }
 
-    fun sendSignal(type: String, sdp: String) {
+    fun sendSignal(type: String, sdp: String = "") {
         val payload = mapOf("type" to type, "sdp" to sdp)
         database?.getReference("securecam/sdp")?.setValue(payload)
     }
