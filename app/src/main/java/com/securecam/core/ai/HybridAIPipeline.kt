@@ -78,7 +78,6 @@ class HybridAIPipeline @Inject constructor(
             val tgChatId = prefs.getString("tg_chat_id", "") ?: ""
             val waUrl = prefs.getString("wa_webhook_url", "") ?: ""
 
-            // Sanitize description for JSON payload
             val safeDesc = description.replace("\"", "\\\"").replace("\n", "\\n")
 
             if (tgToken.isNotBlank() && tgChatId.isNotBlank()) {
@@ -116,25 +115,31 @@ class HybridAIPipeline @Inject constructor(
         Log.d(TAG, "Passing frame to LLM...")
         
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-        val sysPrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
+        val confThreshold = prefs.getFloat("confidence_threshold", 0.85f)
+        val percentReq = (confThreshold * 100).toInt()
+        
+        val basePrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
+        val enforcedPrompt = "$basePrompt ONLY report if you are at least $percentReq% confident there is a distinct threat or anomaly. Otherwise reply 'CLEAR'."
+        
         val usrPrompt = prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: ""
 
         try {
             suspendCancellableCoroutine<Unit> { continuation ->
                 llmAnalyzer.analyze(
                     bitmap = bitmap,
-                    systemPrompt = sysPrompt,
+                    systemPrompt = enforcedPrompt,
                     userPrompt = usrPrompt,
                     onToken = { },
                     onDone = { text -> 
-                        if (text.isNotBlank()) {
+                        val output = text.trim()
+                        if (output.isNotBlank() && !output.contains("CLEAR", ignoreCase = true)) {
                             aiScope.launch {
                                 eventRepository.emitEvent(SecurityEvent(
                                     type = "LLM_INSIGHT",
-                                    description = text,
-                                    confidence = 0.95f
+                                    description = output,
+                                    confidence = confThreshold
                                 ))
-                                dispatchWebhooks(text)
+                                dispatchWebhooks(output)
                             }
                         }
                         if (continuation.isActive) continuation.resume(Unit)
