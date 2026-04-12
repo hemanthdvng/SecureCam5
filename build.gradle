@@ -8,10 +8,10 @@ buildscript {
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.4.2'
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
-        classpath "org.jetbrains.kotlin:kotlin-compose-compiler-plugin:2.1.0"
-        // Downgrading to 2.1.0-1.0.29 for guaranteed Room compatibility on K2
-        classpath "com.google.devtools.ksp:com.google.devtools.ksp.gradle.plugin:2.1.0-1.0.29"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0"
+        classpath "org.jetbrains.kotlin:kotlin-compose-compiler-plugin:2.3.0"
+        // Synchronized KSP to 2.3.0 base to match litertlm-android requirements
+        classpath "com.google.devtools.ksp:com.google.devtools.ksp.gradle.plugin:2.3.0-1.0.29"
         classpath "com.google.dagger:hilt-android-gradle-plugin:$hilt_version"
     }
 }
