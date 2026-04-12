@@ -54,8 +54,11 @@ class LlmVisionAnalyzer(private val context: Context) {
                 Log.d(TAG, "Initializing Engine with Backend = $backendType on file: ${modelFile.name}")
 
                 val backendConfig = when (backendType) {
-                    "NPU" -> Backend.NPU(nativeLibraryDir = context.applicationInfo.nativeLibraryDir)
                     "GPU" -> Backend.GPU()
+                    "NPU" -> {
+                        Log.w(TAG, "Native NPU API unsupported in v0.10.0 without QNN Delegate. Falling back to CPU.")
+                        Backend.CPU()
+                    }
                     else -> Backend.CPU()
                 }
 
