@@ -12,8 +12,8 @@ import javax.inject.Singleton
 
 @Entity(tableName = "security_logs")
 data class SecurityLogEntity(
-    @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val timestamp: Long,
+    @PrimaryKey(autoGenerate = true) var id: Int = 0, // FIX: Changed to var so Room KAPT can generate a setter
+    val logTime: Long, // FIX: Renamed from timestamp to avoid SQLite keyword conflicts
     val type: String,
     val description: String,
     val confidence: Float
@@ -21,7 +21,7 @@ data class SecurityLogEntity(
 
 @Dao
 interface LogDao {
-    @Query("SELECT * FROM security_logs ORDER BY timestamp DESC")
+    @Query("SELECT * FROM security_logs ORDER BY logTime DESC")
     fun getAllLogs(): Flow<List<SecurityLogEntity>>
 
     @Insert
