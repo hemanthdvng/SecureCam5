@@ -82,13 +82,12 @@ class HybridAIPipeline @Inject constructor(
         
         val basePrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
         
-        // DYNAMIC SUPPRESSION LOGIC:
-        // If the slider is > 0, enforce the strict threat check.
-        // If the slider is exactly 0, remove the check so it narrates everything.
+        // BUG FIX: Change generic "CLEAR" to strict "[STATUS_SAFE]" token so the AI doesn't trigger it accidentally.
+        // BUG FIX: Tell the AI what to do if the screen is locked and the image is completely black.
         val enforcedPrompt = if (percentReq > 0) {
-            "$basePrompt ONLY report if you are at least $percentReq% confident there is a distinct threat or anomaly. Otherwise reply 'CLEAR'."
+            "$basePrompt ONLY report if you are at least $percentReq% confident there is a distinct threat. If there is no threat, or if the image is completely dark/blank, reply EXACTLY '[STATUS_SAFE]'."
         } else {
-            basePrompt
+            "$basePrompt If the image is completely dark/blank, reply EXACTLY '[STATUS_SAFE]'."
         }
         
         val usrPrompt = prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: ""
@@ -102,14 +101,18 @@ class HybridAIPipeline @Inject constructor(
                     onToken = { },
                     onDone = { text -> 
                         val output = text.trim()
-                        val isClear = output.contains("CLEAR", ignoreCase = true)
                         
-                        if (!isClear || debugMode) {
+                        // Catch our strict token OR the generic "provide an image" error string
+                        val isSafe = output.contains("[STATUS_SAFE]", ignoreCase = true) || 
+                                     output.contains("provide an image", ignoreCase = true) ||
+                                     output.contains("provide a image", ignoreCase = true)
+                        
+                        if (!isSafe || debugMode) {
                             aiScope.launch {
-                                val finalDesc = if (isClear) "🔍 SCAN: CLEAR (No threats)" else "🚨 $output"
+                                val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Active Threats" else "🚨 $output"
                                 eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
                                 
-                                if (!isClear) {
+                                if (!isSafe) {
                                     dispatchFirebaseAlert(output)
                                 }
                             }
