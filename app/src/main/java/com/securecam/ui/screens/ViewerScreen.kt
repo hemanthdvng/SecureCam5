@@ -3,6 +3,8 @@ package com.securecam.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,9 +41,9 @@ fun ViewerScreen(navController: NavController) {
             verticalArrangement = Arrangement.Center
         ) {
             if (rtcManager != null) {
-                // FIX: Used "Done" which is the standard checkmark in the core library
+                // The icon is now properly imported at the top of the file!
                 Icon(
-                    imageVector = androidx.compose.material.icons.Icons.Default.Done, 
+                    imageVector = Icons.Default.Check, 
                     contentDescription = "WebRTC Ready",
                     tint = Color.Green,
                     modifier = Modifier.size(64.dp)
