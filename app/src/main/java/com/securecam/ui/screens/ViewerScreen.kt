@@ -45,7 +45,6 @@ fun ViewerScreen(navController: NavController) {
                 }
             }
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-                // Attach incoming network video frames to the Android screen
                 val track = receiver?.track() as? VideoTrack
                 track?.addSink(remoteRenderer)
             }
@@ -93,7 +92,6 @@ fun ViewerScreen(navController: NavController) {
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize().background(Color.Black)) {
             
-            // Native WebRTC Video Surface Overlay
             AndroidView(factory = { remoteRenderer }, modifier = Modifier.fillMaxSize())
             
             Column(modifier = Modifier.align(Alignment.TopCenter).padding(16.dp)) {
