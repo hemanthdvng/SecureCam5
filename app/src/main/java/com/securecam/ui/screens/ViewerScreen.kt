@@ -3,8 +3,6 @@ package com.securecam.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -12,19 +10,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
-import com.securecam.core.webrtc.WebRTCManager
+import com.securecam.core.webrtc.FirebaseSignalingClient
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ViewerScreen(navController: NavController) {
     val context = LocalContext.current
-    var rtcManager by remember { mutableStateOf<WebRTCManager?>(null) }
+    var signalClient by remember { mutableStateOf<FirebaseSignalingClient?>(null) }
+    var streamStatus by remember { mutableStateOf("Waiting for Firebase Config...") }
+    var latestTelemetry by remember { mutableStateOf("No AI Insights yet.") }
 
     DisposableEffect(Unit) {
-        rtcManager = WebRTCManager(context)
-        onDispose {
-            rtcManager?.dispose()
+        signalClient = FirebaseSignalingClient(context).apply {
+            onOfferReceived = { streamStatus = "Offer Received from Camera!" }
         }
+        onDispose { }
     }
 
     Scaffold(
@@ -35,31 +35,24 @@ fun ViewerScreen(navController: NavController) {
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier.padding(padding).fillMaxSize().background(Color(0xFF121212)),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            if (rtcManager != null) {
-                // The icon is now properly imported at the top of the file!
-                Icon(
-                    imageVector = Icons.Default.Check, 
-                    contentDescription = "WebRTC Ready",
-                    tint = Color.Green,
-                    modifier = Modifier.size(64.dp)
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("WebRTC Engine Initialized!", style = MaterialTheme.typography.titleMedium, color = Color.White)
+        Box(modifier = Modifier.padding(padding).fillMaxSize().background(Color.Black)) {
+            
+            // UI Overlay for Telemetry
+            Column(modifier = Modifier.align(Alignment.TopCenter).padding(16.dp)) {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
+                    Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(8.dp))
+                }
                 Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    "To stream video between two phones, we will need to implement a Signaling Server (like Firebase or Socket.IO) next to exchange SDP tokens.", 
-                    style = MaterialTheme.typography.bodySmall, 
-                    color = Color.LightGray,
-                    modifier = Modifier.padding(32.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
-            } else {
-                CircularProgressIndicator()
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0x99D32F2F))) {
+                    Text(text = "AI: $latestTelemetry", color = Color.White, modifier = Modifier.padding(16.dp))
+                }
+            }
+
+            Button(
+                onClick = { signalClient?.sendSignal("JOIN", "test_sdp_request") },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp)
+            ) {
+                Text("Join Stream")
             }
         }
     }
