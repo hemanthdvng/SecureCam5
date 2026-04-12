@@ -7,9 +7,10 @@ import com.google.firebase.FirebaseOptions
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.ValueEventListener
 
-class FirebaseSignalingClient(context: Context) {
+class FirebaseSignalingClient(context: Context, private val role: String) {
     private val TAG = "SignalingClient"
     private var database: FirebaseDatabase? = null
     
@@ -17,6 +18,7 @@ class FirebaseSignalingClient(context: Context) {
     var onJoinReceived: (() -> Unit)? = null
     var onOfferReceived: ((String) -> Unit)? = null
     var onAnswerReceived: ((String) -> Unit)? = null
+    var onIceCandidateReceived: ((String) -> Unit)? = null
 
     init {
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -36,7 +38,6 @@ class FirebaseSignalingClient(context: Context) {
                 }
                 database = FirebaseDatabase.getInstance()
                 
-                // Track physical connection to Firebase servers
                 database?.getReference(".info/connected")?.addValueEventListener(object : ValueEventListener {
                     override fun onDataChange(snapshot: DataSnapshot) {
                         val connected = snapshot.getValue(Boolean::class.java) ?: false
@@ -47,27 +48,39 @@ class FirebaseSignalingClient(context: Context) {
 
                 listenForSignals()
             } catch (e: Exception) {
-                Log.e(TAG, "Firebase Manual Init Failed", e)
+                Log.e(TAG, "Firebase Init Error", e)
             }
         }
     }
 
     private fun listenForSignals() {
-        database?.getReference("securecam/sdp")?.addValueEventListener(object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
+        // We use ChildEventListener and push() to handle rapid, overlapping ICE Candidate arrays safely
+        database?.getReference("securecam/signals")?.addChildEventListener(object : ChildEventListener {
+            override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+                val sender = snapshot.child("sender").getValue(String::class.java)
+                if (sender == role) return // Ignore signals sent by ourselves
+
                 val type = snapshot.child("type").getValue(String::class.java)
                 val sdp = snapshot.child("sdp").getValue(String::class.java)
                 
                 if (type == "JOIN") onJoinReceived?.invoke()
                 if (type == "OFFER" && sdp != null) onOfferReceived?.invoke(sdp)
                 if (type == "ANSWER" && sdp != null) onAnswerReceived?.invoke(sdp)
+                if (type == "ICE" && sdp != null) onIceCandidateReceived?.invoke(sdp)
             }
-            override fun onCancelled(error: DatabaseError) {}
+            override fun onChildChanged(s: DataSnapshot, p: String?) {}
+            override fun onChildRemoved(s: DataSnapshot) {}
+            override fun onChildMoved(s: DataSnapshot, p: String?) {}
+            override fun onCancelled(e: DatabaseError) {}
         })
     }
 
     fun sendSignal(type: String, sdp: String = "") {
-        val payload = mapOf("type" to type, "sdp" to sdp)
-        database?.getReference("securecam/sdp")?.setValue(payload)
+        val payload = mapOf("type" to type, "sdp" to sdp, "sender" to role)
+        database?.getReference("securecam/signals")?.push()?.setValue(payload)
+    }
+
+    fun clearSignals() {
+        database?.getReference("securecam/signals")?.removeValue()
     }
 }
