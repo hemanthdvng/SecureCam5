@@ -46,29 +46,32 @@ fun MainScreen(navController: NavController) {
             
             ElevatedCard(
                 onClick = { navController.navigate("camera") },
-                modifier = Modifier.fillMaxWidth().height(120.dp)
+                modifier = Modifier.fillMaxWidth().height(100.dp)
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("📷", style = MaterialTheme.typography.headlineMedium)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Camera Mode", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    }
+                    Text("📷 Camera Mode", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 }
             }
             
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
             
             ElevatedCard(
                 onClick = { navController.navigate("viewer") },
-                modifier = Modifier.fillMaxWidth().height(120.dp)
+                modifier = Modifier.fillMaxWidth().height(100.dp)
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("👁️", style = MaterialTheme.typography.headlineMedium)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Viewer Mode", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    }
+                    Text("👁️ Viewer Mode", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            ElevatedCard(
+                onClick = { navController.navigate("logs") },
+                modifier = Modifier.fillMaxWidth().height(100.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Text("📋 Security Logs", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 }
             }
         }
