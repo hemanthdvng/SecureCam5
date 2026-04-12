@@ -8,7 +8,6 @@ import com.securecam.data.repository.SecurityEvent
 import com.securecam.data.repository.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.first
 import kotlin.coroutines.resume
 import java.util.concurrent.Executors
 import javax.inject.Inject
@@ -84,11 +83,14 @@ class HybridAIPipeline @Inject constructor(
                 onToken = { token: String -> },
                 onDone = { text: String -> 
                     if (text.isNotBlank()) {
-                        eventRepository.emitEvent(SecurityEvent(
-                            type = "LLM_INSIGHT",
-                            description = text,
-                            confidence = 0.95f
-                        ))
+                        // FIX: Wrap the suspend function inside a coroutine
+                        aiScope.launch {
+                            eventRepository.emitEvent(SecurityEvent(
+                                type = "LLM_INSIGHT",
+                                description = text,
+                                confidence = 0.95f
+                            ))
+                        }
                     }
                     isLlmBusy = false
                     if (continuation.isActive) continuation.resume(Unit)
