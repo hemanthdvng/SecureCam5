@@ -1,7 +1,9 @@
 package com.securecam.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.util.Size
 import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +50,8 @@ class CameraViewModel @Inject constructor(
     private val _latestEvent = MutableStateFlow<SecurityEvent?>(null)
     val latestEvent = _latestEvent.asStateFlow()
 
+    private var lastAnalyzeTime = 0L
+
     init {
         viewModelScope.launch {
             eventRepository.securityEvents.collect { event -> _latestEvent.value = event }
@@ -55,7 +59,18 @@ class CameraViewModel @Inject constructor(
     }
 
     @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-    fun processImageProxy(image: ImageProxy) {
+    fun processImageProxy(image: ImageProxy, context: Context) {
+        // Dynamically read the user's custom frame rate setting
+        val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+        val intervalMs = (prefs.getFloat("scan_interval_sec", 1f) * 1000).toLong()
+
+        val currentTimestamp = System.currentTimeMillis()
+        if (currentTimestamp - lastAnalyzeTime < intervalMs) {
+            image.close()
+            return
+        }
+        lastAnalyzeTime = currentTimestamp
+
         try {
             val bitmap = image.toBitmap()
             aiPipeline.processFrame(bitmap)
@@ -70,8 +85,6 @@ class CameraViewModel @Inject constructor(
 @Composable
 fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hiltViewModel()) {
     val latestEvent by viewModel.latestEvent.collectAsState()
-    
-    // UI State for the auto-dismissing popup
     var displayEvent by remember { mutableStateOf<SecurityEvent?>(null) }
     
     val context = LocalContext.current
@@ -90,7 +103,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         if (!hasCameraPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    // Auto-dismiss the notification after 5 seconds
     LaunchedEffect(latestEvent) {
         if (latestEvent != null) {
             displayEvent = latestEvent
@@ -120,10 +132,12 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                         val imageAnalysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                            // FORCE HARDWARE DOWNSCALE: Massive memory and CPU savings!
+                            .setTargetResolution(Size(512, 512)) 
                             .build()
                             .also {
                                 it.setAnalyzer(analyzerExecutor) { imageProxy ->
-                                    viewModel.processImageProxy(imageProxy)
+                                    viewModel.processImageProxy(imageProxy, ctx)
                                 }
                             }
 
@@ -141,7 +155,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             )
         }
 
-        // Animated Notification Overlay
         displayEvent?.let { event ->
             val pillColor = if (event.confidence > 0.8f) Color(0xFFD32F2F) else Color(0xFF1976D2)
             Card(
