@@ -16,6 +16,7 @@
     <application
         android:name=".SecureCamApp"
         android:allowBackup="true"
+        android:largeHeap="true" 
         android:label="SecureCam 5"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
