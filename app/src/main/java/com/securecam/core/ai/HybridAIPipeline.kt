@@ -9,6 +9,8 @@ import com.securecam.data.repository.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlin.coroutines.resume
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.Executors
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -69,6 +71,46 @@ class HybridAIPipeline @Inject constructor(
         }
     }
 
+    private fun dispatchWebhooks(description: String) {
+        aiScope.launch(Dispatchers.IO) {
+            val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+            val tgToken = prefs.getString("tg_bot_token", "") ?: ""
+            val tgChatId = prefs.getString("tg_chat_id", "") ?: ""
+            val waUrl = prefs.getString("wa_webhook_url", "") ?: ""
+
+            // Sanitize description for JSON payload
+            val safeDesc = description.replace("\"", "\\\"").replace("\n", "\\n")
+
+            if (tgToken.isNotBlank() && tgChatId.isNotBlank()) {
+                try {
+                    val url = URL("https://api.telegram.org/bot$tgToken/sendMessage")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.doOutput = true
+                    val payload = "{\"chat_id\": \"$tgChatId\", \"text\": \"🚨 *SecureCam Alert* 🚨\\n\\n$safeDesc\"}"
+                    conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                    conn.responseCode
+                    conn.disconnect()
+                } catch (e: Exception) { Log.e(TAG, "Telegram Webhook Error", e) }
+            }
+
+            if (waUrl.isNotBlank()) {
+                try {
+                    val url = URL(waUrl)
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.doOutput = true
+                    val payload = "{\"text\": \"🚨 SecureCam Alert:\\n$safeDesc\"}"
+                    conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                    conn.responseCode
+                    conn.disconnect()
+                } catch (e: Exception) { Log.e(TAG, "WhatsApp Webhook Error", e) }
+            }
+        }
+    }
+
     private suspend fun triggerLlmAnalysis(bitmap: Bitmap) {
         isLlmBusy = true
         Log.d(TAG, "Passing frame to LLM...")
@@ -92,6 +134,7 @@ class HybridAIPipeline @Inject constructor(
                                     description = text,
                                     confidence = 0.95f
                                 ))
+                                dispatchWebhooks(text)
                             }
                         }
                         if (continuation.isActive) continuation.resume(Unit)
@@ -103,7 +146,6 @@ class HybridAIPipeline @Inject constructor(
                 )
             }
         } finally {
-            // FIX: Guaranteed to unlock the busy state even if the coroutine crashes
             isLlmBusy = false
         }
     }
