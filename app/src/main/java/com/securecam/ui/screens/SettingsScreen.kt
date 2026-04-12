@@ -89,9 +89,14 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f)) }
     var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
+    
+    // Firebase Cloud Networking Settings
     var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
+    
+    var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
+    var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importModel(it, context) }
@@ -121,7 +126,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
             
-            Text("AI Engine Preferences", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+            Text("AI Engine Preferences", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(16.dp))
 
             Row(
@@ -150,6 +155,33 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            OutlinedTextField(
+                value = sysPrompt,
+                onValueChange = { 
+                    sysPrompt = it
+                    prefs.edit().putString("prompt_sys", it).apply()
+                },
+                label = { Text("System Prompt") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = usrPrompt,
+                onValueChange = { 
+                    usrPrompt = it
+                    prefs.edit().putString("prompt_usr", it).apply()
+                },
+                label = { Text("User Prompt") },
+                modifier = Modifier.fillMaxWidth()
+            )
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
