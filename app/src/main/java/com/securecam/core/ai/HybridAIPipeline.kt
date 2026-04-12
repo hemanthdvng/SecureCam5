@@ -9,8 +9,6 @@ import com.securecam.data.repository.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlin.coroutines.resume
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -31,26 +29,14 @@ class HybridAIPipeline @Inject constructor(
     private var isLlmEnabledSetting = true
 
     init {
-        aiScope.launch {
-            settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it }
-        }
+        aiScope.launch { settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it } }
     }
 
     fun start() {
-        Log.d(TAG, "Attempting to boot LLM Engine...")
-        llmAnalyzer.initialize { result ->
-            if (result is LlmVisionAnalyzer.InitResult.Success) {
-                isLlmInitialized = true
-                Log.d(TAG, "Model Loaded and Ready!")
-            } else {
-                isLlmInitialized = false
-                Log.e(TAG, "Failed to load model: $result")
-            }
-        }
+        llmAnalyzer.initialize { result -> isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) }
     }
 
     fun stop() {
-        Log.d(TAG, "Stopping AI Pipeline...")
         llmAnalyzer.close()
         isLlmInitialized = false
         isLlmBusy = false
@@ -64,63 +50,38 @@ class HybridAIPipeline @Inject constructor(
                     return@launch
                 }
                 triggerLlmAnalysis(bitmap)
-            } catch (e: Throwable) { 
-                Log.e(TAG, "Frame processing error", e)
-                bitmap.recycle()
-            }
+            } catch (e: Throwable) { bitmap.recycle() }
         }
     }
 
-    private fun dispatchWebhooks(description: String) {
+    private fun dispatchFirebaseAlert(description: String) {
         aiScope.launch(Dispatchers.IO) {
-            val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-            val tgToken = prefs.getString("tg_bot_token", "") ?: ""
-            val tgChatId = prefs.getString("tg_chat_id", "") ?: ""
-            val waUrl = prefs.getString("wa_webhook_url", "") ?: ""
-
-            val safeDesc = description.replace("\"", "\\\"").replace("\n", "\\n")
-
-            if (tgToken.isNotBlank() && tgChatId.isNotBlank()) {
-                try {
-                    val url = URL("https://api.telegram.org/bot$tgToken/sendMessage")
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.doOutput = true
-                    val payload = "{\"chat_id\": \"$tgChatId\", \"text\": \"🚨 *SecureCam Alert* 🚨\\n\\n$safeDesc\"}"
-                    conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-                    conn.responseCode
-                    conn.disconnect()
-                } catch (e: Exception) { Log.e(TAG, "Telegram Webhook Error", e) }
-            }
-
-            if (waUrl.isNotBlank()) {
-                try {
-                    val url = URL(waUrl)
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.doOutput = true
-                    val payload = "{\"text\": \"🚨 SecureCam Alert:\\n$safeDesc\"}"
-                    conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-                    conn.responseCode
-                    conn.disconnect()
-                } catch (e: Exception) { Log.e(TAG, "WhatsApp Webhook Error", e) }
-            }
+            try {
+                val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                val dbUrl = prefs.getString("fb_db_url", "") ?: ""
+                
+                if (dbUrl.isNotBlank()) {
+                    val db = com.google.firebase.database.FirebaseDatabase.getInstance()
+                    val payload = mapOf(
+                        "timestamp" to System.currentTimeMillis(),
+                        "text" to description
+                    )
+                    db.getReference("securecam/alerts").push().setValue(payload)
+                }
+            } catch (e: Exception) { Log.e(TAG, "Firebase Alert Error", e) }
         }
     }
 
     private suspend fun triggerLlmAnalysis(bitmap: Bitmap) {
         isLlmBusy = true
-        Log.d(TAG, "Passing frame to LLM...")
         
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val confThreshold = prefs.getFloat("confidence_threshold", 0.85f)
+        val debugMode = prefs.getBoolean("debug_mode", true)
         val percentReq = (confThreshold * 100).toInt()
         
         val basePrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
         val enforcedPrompt = "$basePrompt ONLY report if you are at least $percentReq% confident there is a distinct threat or anomaly. Otherwise reply 'CLEAR'."
-        
         val usrPrompt = prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: ""
 
         try {
@@ -132,22 +93,21 @@ class HybridAIPipeline @Inject constructor(
                     onToken = { },
                     onDone = { text -> 
                         val output = text.trim()
-                        if (output.isNotBlank() && !output.contains("CLEAR", ignoreCase = true)) {
+                        val isClear = output.contains("CLEAR", ignoreCase = true)
+                        
+                        if (!isClear || debugMode) {
                             aiScope.launch {
-                                eventRepository.emitEvent(SecurityEvent(
-                                    type = "LLM_INSIGHT",
-                                    description = output,
-                                    confidence = confThreshold
-                                ))
-                                dispatchWebhooks(output)
+                                val finalDesc = if (isClear) "🔍 SCAN: CLEAR (No threats)" else "🚨 $output"
+                                eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
+                                
+                                if (!isClear) {
+                                    dispatchFirebaseAlert(output)
+                                }
                             }
                         }
                         if (continuation.isActive) continuation.resume(Unit)
                     },
-                    onError = { err -> 
-                        Log.e(TAG, "LLM inference failed: $err")
-                        if (continuation.isActive) continuation.resume(Unit)
-                    }
+                    onError = { if (continuation.isActive) continuation.resume(Unit) }
                 )
             }
         } finally {
