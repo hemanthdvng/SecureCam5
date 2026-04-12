@@ -66,6 +66,7 @@ class HybridAIPipeline @Inject constructor(
                         "timestamp" to System.currentTimeMillis(),
                         "text" to description
                     )
+                    // Push to the new alerts node
                     db.getReference("securecam/alerts").push().setValue(payload)
                 }
             } catch (e: Exception) { Log.e(TAG, "Firebase Alert Error", e) }
