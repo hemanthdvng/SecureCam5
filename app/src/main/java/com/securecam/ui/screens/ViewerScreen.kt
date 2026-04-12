@@ -39,8 +39,9 @@ fun ViewerScreen(navController: NavController) {
             verticalArrangement = Arrangement.Center
         ) {
             if (rtcManager != null) {
+                // FIX: Swapped "Build" for "CheckCircle" which is included in the Core Icons library
                 Icon(
-                    imageVector = androidx.compose.material.icons.Icons.Default.Build, 
+                    imageVector = androidx.compose.material.icons.Icons.Default.CheckCircle, 
                     contentDescription = "WebRTC Ready",
                     tint = Color.Green,
                     modifier = Modifier.size(64.dp)
