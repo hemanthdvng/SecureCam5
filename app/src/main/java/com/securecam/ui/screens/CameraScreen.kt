@@ -43,7 +43,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("Camera Host Mode Active", color = Color.White)
             Spacer(modifier = Modifier.height(16.dp))
-            Text("WebRTC Video Track Binding in Stage 14b...", color = Color.Gray)
+            Text("Firebase WebRTC Stream Ready", color = Color.Green)
         }
 
         Button(
