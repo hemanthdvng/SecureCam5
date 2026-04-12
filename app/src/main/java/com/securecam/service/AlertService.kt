@@ -3,11 +3,14 @@ package com.securecam.service
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
@@ -30,7 +33,7 @@ class AlertService : LifecycleService() {
         super.onCreate()
         createNotificationChannel()
         startForeground(202, createForegroundNotification())
-        listenForAlerts()
+        initFirebaseAndListen()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -38,27 +41,45 @@ class AlertService : LifecycleService() {
         return START_STICKY
     }
 
-    private fun listenForAlerts() {
+    private fun initFirebaseAndListen() {
         try {
-            val db = FirebaseDatabase.getInstance()
-            db.getReference("securecam/alerts").addChildEventListener(object : ChildEventListener {
-                override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-                    val timestamp = snapshot.child("timestamp").getValue(Long::class.java) ?: 0L
-                    val text = snapshot.child("text").getValue(String::class.java) ?: "Unknown Alert"
-                    
-                    // Only process fresh alerts that occurred after the service started
-                    if (timestamp > initTime - 5000) {
-                        CoroutineScope(Dispatchers.IO).launch {
-                            eventRepository.emitEvent(SecurityEvent("REMOTE_ALERT", text, 1.0f))
-                        }
-                        showHeadsUpNotification(text)
-                    }
+            // CRASH FIX: The service must manually load the Firebase keys if the UI is dead!
+            val prefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+            val dbUrl = prefs.getString("fb_db_url", "") ?: ""
+            val apiKey = prefs.getString("fb_api_key", "") ?: ""
+            val appId = prefs.getString("fb_app_id", "") ?: ""
+
+            if (dbUrl.isNotBlank() && apiKey.isNotBlank() && appId.isNotBlank()) {
+                if (FirebaseApp.getApps(this).isEmpty()) {
+                    val options = FirebaseOptions.Builder()
+                        .setDatabaseUrl(dbUrl)
+                        .setApiKey(apiKey)
+                        .setApplicationId(appId)
+                        .build()
+                    FirebaseApp.initializeApp(this, options)
                 }
-                override fun onChildChanged(s: DataSnapshot, p: String?) {}
-                override fun onChildRemoved(s: DataSnapshot) {}
-                override fun onChildMoved(s: DataSnapshot, p: String?) {}
-                override fun onCancelled(e: DatabaseError) {}
-            })
+
+                val db = FirebaseDatabase.getInstance()
+                db.getReference("securecam/alerts").addChildEventListener(object : ChildEventListener {
+                    override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+                        val timestamp = snapshot.child("timestamp").getValue(Long::class.java) ?: 0L
+                        val text = snapshot.child("text").getValue(String::class.java) ?: "Unknown Alert"
+                        
+                        if (timestamp > initTime - 5000) {
+                            CoroutineScope(Dispatchers.IO).launch {
+                                eventRepository.emitEvent(SecurityEvent("REMOTE_ALERT", text, 1.0f))
+                            }
+                            showHeadsUpNotification(text)
+                        }
+                    }
+                    override fun onChildChanged(s: DataSnapshot, p: String?) {}
+                    override fun onChildRemoved(s: DataSnapshot) {}
+                    override fun onChildMoved(s: DataSnapshot, p: String?) {}
+                    override fun onCancelled(e: DatabaseError) {}
+                })
+            } else {
+                Log.e("AlertService", "Firebase credentials missing in SharedPreferences")
+            }
         } catch (e: Exception) {
             Log.e("AlertService", "Failed to bind Firebase Listener", e)
         }
@@ -84,10 +105,8 @@ class AlertService : LifecycleService() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(NotificationManager::class.java)
-            
             val serviceChannel = NotificationChannel("securecam_bg", "Background Service", NotificationManager.IMPORTANCE_LOW)
             manager.createNotificationChannel(serviceChannel)
-
             val alertChannel = NotificationChannel("securecam_alerts", "Security Alerts", NotificationManager.IMPORTANCE_HIGH)
             manager.createNotificationChannel(alertChannel)
         }
@@ -96,7 +115,7 @@ class AlertService : LifecycleService() {
     private fun createForegroundNotification(): android.app.Notification {
         return NotificationCompat.Builder(this, "securecam_bg")
             .setContentTitle("SecureCam Viewer")
-            .setContentText("Listening for security alerts in background...")
+            .setContentText("Listening for offline security alerts...")
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .build()
     }
