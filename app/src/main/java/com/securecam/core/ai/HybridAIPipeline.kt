@@ -52,7 +52,7 @@ class HybridAIPipeline @Inject constructor(
         aiScope.launch {
             try {
                 val llmEnabled = settingsRepository.isLlmEnabled.first()
-                val hasAnomaly = performLightweightScan(bitmap) // Removed parameter since it doesn't need it yet, but keeping structure
+                val hasAnomaly = performLightweightScan(bitmap)
                 
                 if (hasAnomaly) {
                     if (!llmEnabled) {
