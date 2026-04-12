@@ -37,7 +37,7 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
     
-    // FIX: Required for Hilt to compile WatchTowerService
+    // Required for Hilt to compile WatchTowerService
     implementation 'androidx.lifecycle:lifecycle-service:2.7.0'
     
     // Compose
@@ -46,6 +46,7 @@ dependencies {
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.material3:material3'
     implementation 'androidx.activity:activity-compose:1.8.2'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0'
     implementation 'androidx.navigation:navigation-compose:2.7.7'
 
     // Dagger Hilt & DB
@@ -56,6 +57,9 @@ dependencies {
     implementation 'androidx.room:room-ktx:2.7.1'
     ksp 'androidx.room:room-compiler:2.7.1'
     implementation 'androidx.sqlite:sqlite:2.5.0'
+    
+    // FIX: Restored DataStore for SettingsRepository
+    implementation 'androidx.datastore:datastore-preferences:1.0.0'
     
     // Firebase Signaling
     implementation platform('com.google.firebase:firebase-bom:32.8.0')
