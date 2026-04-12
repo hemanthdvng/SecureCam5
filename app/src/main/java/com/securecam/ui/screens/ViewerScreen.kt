@@ -9,27 +9,78 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavController
-import com.securecam.core.webrtc.FirebaseSignalingClient
+import com.google.gson.Gson
+import com.securecam.core.webrtc.*
+import org.webrtc.IceCandidate
+import org.webrtc.MediaConstraints
+import org.webrtc.MediaStream
+import org.webrtc.PeerConnection
+import org.webrtc.RtpReceiver
+import org.webrtc.SessionDescription
+import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoTrack
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ViewerScreen(navController: NavController) {
     val context = LocalContext.current
+    val remoteRenderer = remember { SurfaceViewRenderer(context) }
     var signalClient by remember { mutableStateOf<FirebaseSignalingClient?>(null) }
-    var streamStatus by remember { mutableStateOf("Initializing Firebase...") }
+    var streamStatus by remember { mutableStateOf("Initializing Viewport...") }
     var latestTelemetry by remember { mutableStateOf("No AI Insights yet.") }
 
     DisposableEffect(Unit) {
-        signalClient = FirebaseSignalingClient(context).apply {
-            onConnected = { streamStatus = "Firebase Connected. Ready to Join!" }
-            onOfferReceived = { sdp -> 
-                streamStatus = "Offer Received! Sending Answer..." 
-                sendSignal("ANSWER", "viewer_sdp_answer")
-                streamStatus = "WebRTC Handshake Complete! (Video Track Pending)"
+        val rtcManager = WebRTCManager(context).apply { initRenderer(remoteRenderer) }
+        signalClient = FirebaseSignalingClient(context, "VIEWER")
+
+        signalClient?.onConnected = { streamStatus = "Firebase Connected. Ready to Join!" }
+        
+        val observer = object : SimplePeerConnectionObserver() {
+            override fun onIceCandidate(candidate: IceCandidate?) {
+                candidate?.let {
+                    val json = Gson().toJson(IceCandidateData(it.sdpMid, it.sdpMLineIndex, it.sdp))
+                    signalClient?.sendSignal("ICE", json)
+                }
+            }
+            override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+                // Attach incoming network video frames to the Android screen
+                val track = receiver?.track() as? VideoTrack
+                track?.addSink(remoteRenderer)
             }
         }
-        onDispose { }
+        
+        val peerConnection = rtcManager.createPeerConnection(observer)
+
+        signalClient?.onOfferReceived = { sdpStr -> 
+            streamStatus = "Offer Received! Routing ICE & Sending Answer..." 
+            val data = Gson().fromJson(sdpStr, SdpData::class.java)
+            val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(data.type), data.sdp)
+            peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
+            
+            peerConnection?.createAnswer(object : SimpleSdpObserver() {
+                override fun onCreateSuccess(sdp: SessionDescription?) {
+                    sdp?.let {
+                        peerConnection.setLocalDescription(SimpleSdpObserver(), it)
+                        val json = Gson().toJson(SdpData(it.type.canonicalForm(), it.description))
+                        signalClient?.sendSignal("ANSWER", json)
+                    }
+                }
+            }, MediaConstraints())
+            streamStatus = "LIVE STREAM ACTIVE"
+        }
+
+        signalClient?.onIceCandidateReceived = { iceStr ->
+            val data = Gson().fromJson(iceStr, IceCandidateData::class.java)
+            peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp))
+        }
+
+        onDispose {
+            try { remoteRenderer.release() } catch(e: Exception){}
+            peerConnection?.dispose()
+            rtcManager.dispose()
+        }
     }
 
     Scaffold(
@@ -42,9 +93,12 @@ fun ViewerScreen(navController: NavController) {
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize().background(Color.Black)) {
             
+            // Native WebRTC Video Surface Overlay
+            AndroidView(factory = { remoteRenderer }, modifier = Modifier.fillMaxSize())
+            
             Column(modifier = Modifier.align(Alignment.TopCenter).padding(16.dp)) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
-                    Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(16.dp))
+                    Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(8.dp))
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99D32F2F))) {
