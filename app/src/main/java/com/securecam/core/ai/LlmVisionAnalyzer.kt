@@ -47,9 +47,12 @@ class LlmVisionAnalyzer(private val context: Context) {
                 return@launch 
             }
 
+            // FIX: Declare outside the try-block so the catch-block can read it
+            var backendType = "CPU"
+            
             try {
                 val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-                val backendType = prefs.getString("ai_backend", "CPU") ?: "CPU"
+                backendType = prefs.getString("ai_backend", "CPU") ?: "CPU"
                 
                 Log.d(TAG, "Initializing Engine with Backend = $backendType on file: ${modelFile.name}")
 
