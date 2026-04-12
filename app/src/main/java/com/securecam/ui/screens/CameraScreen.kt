@@ -18,6 +18,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.navigation.NavController
 import com.securecam.core.ai.HybridAIPipeline
+import com.securecam.core.webrtc.FirebaseSignalingClient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 
@@ -31,19 +32,35 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     val context = LocalContext.current
     var hasPermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     
+    var streamStatus by remember { mutableStateOf("Initializing Firebase...") }
+
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPermission = it }
     LaunchedEffect(Unit) { if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA) }
 
     DisposableEffect(Unit) {
         viewModel.aiPipeline.start()
+        
+        val signalClient = FirebaseSignalingClient(context).apply {
+            onConnected = { streamStatus = "Firebase Connected. Waiting for Viewer..." }
+            onJoinReceived = {
+                streamStatus = "Viewer JOIN detected! Sending Offer..."
+                sendSignal("OFFER", "camera_sdp_offer")
+            }
+            onAnswerReceived = { sdp ->
+                streamStatus = "WebRTC Handshake Complete! (Video Track Pending)"
+            }
+        }
+
         onDispose { viewModel.aiPipeline.stop() }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Camera Host Mode Active", color = Color.White)
+            Text("Camera Host Mode Active", color = Color.White, style = MaterialTheme.typography.titleLarge)
             Spacer(modifier = Modifier.height(16.dp))
-            Text("Firebase WebRTC Stream Ready", color = Color.Green)
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
+                Text(streamStatus, color = Color.Green, modifier = Modifier.padding(16.dp))
+            }
         }
 
         Button(
