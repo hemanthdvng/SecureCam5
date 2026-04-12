@@ -35,6 +35,13 @@ class LlmVisionAnalyzer(private val context: Context) {
     @OptIn(ExperimentalApi::class)
     fun initialize(onResult: (InitResult) -> Unit) {
         llmScope.launch {
+            // Free memory if rebooting engine
+            if (engine != null) {
+                try { engine?.close() } catch (e: Exception) {}
+                engine = null
+            }
+            initialized.set(false)
+
             val modelFile = LlmModelManager.getInstalledModel(context)
             if (modelFile == null) { 
                 withContext(Dispatchers.Main) { onResult(InitResult.ModelNotFound) }
@@ -42,19 +49,28 @@ class LlmVisionAnalyzer(private val context: Context) {
             }
 
             try {
+                // Read User CPU/GPU Preference
+                val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                val useGpu = prefs.getBoolean("use_gpu", false)
+                
+                Log.d(TAG, "Initializing Engine with GPU = $useGpu on file: ${modelFile.name}")
+
+                val backendConfig = if (useGpu) Backend.GPU() else Backend.CPU()
+
                 val cfg = EngineConfig(
                     modelPath = modelFile.absolutePath,
-                    backend = Backend.GPU(), 
-                    visionBackend = Backend.GPU(),
+                    backend = backendConfig, 
+                    visionBackend = backendConfig,
                     cacheDir = context.cacheDir.absolutePath
                 )
+                
                 engine = Engine(cfg).also { it.initialize() }
                 initialized.set(true)
                 withContext(Dispatchers.Main) { onResult(InitResult.Success) }
             } catch (e: Exception) {
                 Log.e(TAG, "initialize() failed: ${e.message}")
                 withContext(Dispatchers.Main) { 
-                    onResult(InitResult.Error("Failed to initialize LiteRT LM: ${e.message}")) 
+                    onResult(InitResult.Error("Init failed (Try turning off GPU Acceleration): ${e.message}")) 
                 }
             }
         }
