@@ -175,7 +175,8 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Spacer(modifier = Modifier.height(16.dp))
             Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
-            Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.1f..1.0f, steps = 90)
+            // Updated valueRange to start at 0.0f
+            Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.0f..1.0f, steps = 100)
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
