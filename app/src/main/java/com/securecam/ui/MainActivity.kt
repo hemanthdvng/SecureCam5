@@ -13,6 +13,8 @@ import androidx.navigation.compose.rememberNavController
 import com.securecam.ui.screens.MainScreen
 import com.securecam.ui.screens.CameraScreen
 import com.securecam.ui.screens.SettingsScreen
+import com.securecam.ui.screens.ViewerScreen
+import com.securecam.ui.screens.LogsScreen
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -28,10 +30,8 @@ class MainActivity : ComponentActivity() {
                         composable("main") { MainScreen(navController) }
                         composable("camera") { CameraScreen(navController) }
                         composable("settings") { SettingsScreen(navController) }
-                        // Placeholder for Viewer Mode (to avoid crashing before WebRTC is fully coded)
-                        composable("viewer") { 
-                            androidx.compose.material3.Text("Viewer Mode Coming in Stage 5!") 
-                        }
+                        composable("viewer") { ViewerScreen(navController) }
+                        composable("logs") { LogsScreen(navController) }
                     }
                 }
             }
