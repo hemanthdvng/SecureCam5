@@ -35,7 +35,6 @@ class LlmVisionAnalyzer(private val context: Context) {
     @OptIn(ExperimentalApi::class)
     fun initialize(onResult: (InitResult) -> Unit) {
         llmScope.launch {
-            // Free memory if rebooting engine
             if (engine != null) {
                 try { engine?.close() } catch (e: Exception) {}
                 engine = null
@@ -49,13 +48,16 @@ class LlmVisionAnalyzer(private val context: Context) {
             }
 
             try {
-                // Read User CPU/GPU Preference
                 val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-                val useGpu = prefs.getBoolean("use_gpu", false)
+                val backendType = prefs.getString("ai_backend", "CPU") ?: "CPU"
                 
-                Log.d(TAG, "Initializing Engine with GPU = $useGpu on file: ${modelFile.name}")
+                Log.d(TAG, "Initializing Engine with Backend = $backendType on file: ${modelFile.name}")
 
-                val backendConfig = if (useGpu) Backend.GPU() else Backend.CPU()
+                val backendConfig = when (backendType) {
+                    "NPU" -> Backend.NPU(nativeLibraryDir = context.applicationInfo.nativeLibraryDir)
+                    "GPU" -> Backend.GPU()
+                    else -> Backend.CPU()
+                }
 
                 val cfg = EngineConfig(
                     modelPath = modelFile.absolutePath,
@@ -70,7 +72,7 @@ class LlmVisionAnalyzer(private val context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "initialize() failed: ${e.message}")
                 withContext(Dispatchers.Main) { 
-                    onResult(InitResult.Error("Init failed (Try turning off GPU Acceleration): ${e.message}")) 
+                    onResult(InitResult.Error("Init failed ($backendType Error): ${e.message}")) 
                 }
             }
         }
