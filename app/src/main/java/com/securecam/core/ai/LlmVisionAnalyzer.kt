@@ -32,14 +32,23 @@ class LlmVisionAnalyzer(private val context: Context) {
         object ModelNotFound : InitResult()
     }
 
+    fun close() {
+        Log.d(TAG, "Closing LLM Engine and freeing GPU VRAM...")
+        initialized.set(false)
+        busy.set(false)
+        try {
+            engine?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing engine: ${e.message}")
+        } finally {
+            engine = null
+        }
+    }
+
     @OptIn(ExperimentalApi::class)
     fun initialize(onResult: (InitResult) -> Unit) {
         llmScope.launch {
-            if (engine != null) {
-                try { engine?.close() } catch (e: Exception) {}
-                engine = null
-            }
-            initialized.set(false)
+            close() // Always ensure previous zombie engine is dead before booting
 
             val modelFile = LlmModelManager.getInstalledModel(context)
             if (modelFile == null) { 
@@ -47,19 +56,17 @@ class LlmVisionAnalyzer(private val context: Context) {
                 return@launch 
             }
 
-            // FIX: Declare outside the try-block so the catch-block can read it
             var backendType = "CPU"
-            
             try {
                 val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                 backendType = prefs.getString("ai_backend", "CPU") ?: "CPU"
                 
-                Log.d(TAG, "Initializing Engine with Backend = $backendType on file: ${modelFile.name}")
+                Log.d(TAG, "Booting Engine with Backend = $backendType on file: ${modelFile.name}")
 
                 val backendConfig = when (backendType) {
                     "GPU" -> Backend.GPU()
                     "NPU" -> {
-                        Log.w(TAG, "Native NPU API unsupported in v0.10.0 without QNN Delegate. Falling back to CPU.")
+                        Log.w(TAG, "Native NPU unsupported without QNN. Falling back to CPU.")
                         Backend.CPU()
                     }
                     else -> Backend.CPU()
@@ -87,7 +94,8 @@ class LlmVisionAnalyzer(private val context: Context) {
     @OptIn(ExperimentalApi::class)
     fun analyze(
         bitmap: Bitmap,
-        triggerType: String,
+        systemPrompt: String,
+        userPrompt: String,
         onToken: (String) -> Unit,
         onDone: (String) -> Unit,
         onError: (String) -> Unit
@@ -103,14 +111,14 @@ class LlmVisionAnalyzer(private val context: Context) {
                 val conversation = eng.createConversation(
                     ConversationConfig(
                         samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.4),
-                        systemInstruction = Contents.of("You are a security camera AI assistant. Provide brief, factual security observations.")
+                        systemInstruction = Contents.of(systemPrompt)
                     )
                 )
 
                 val imageBytes = bitmap.toJpegBytes(maxDim = 512)
                 val contents = Contents.of(listOf(
                     Content.ImageBytes(imageBytes),
-                    Content.Text("Describe what you see in this camera frame from a security perspective.")
+                    Content.Text(userPrompt)
                 ))
 
                 val sb = StringBuilder()
@@ -137,9 +145,5 @@ class LlmVisionAnalyzer(private val context: Context) {
         return ByteArrayOutputStream().also {
             scaled.compress(Bitmap.CompressFormat.JPEG, 70, it)
         }.toByteArray()
-    }
-
-    companion object {
-        const val TRIGGER_OBJECT = "object"
     }
 }
