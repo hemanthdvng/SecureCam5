@@ -40,18 +40,13 @@ class SettingsViewModel @Inject constructor(
         private set
 
     var currentModelName by mutableStateOf("None")
-    var useGpu by mutableStateOf(false)
 
     fun loadPrefs(context: Context) {
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         currentModelName = prefs.getString("selected_model", "None") ?: "None"
-        useGpu = prefs.getBoolean("use_gpu", false)
     }
 
-    fun setGpu(context: Context, enabled: Boolean) {
-        useGpu = enabled
-        context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-            .edit().putBoolean("use_gpu", enabled).apply()
+    fun reinitializeAi() {
         aiPipeline.reinitialize()
     }
 
@@ -63,7 +58,6 @@ class SettingsViewModel @Inject constructor(
         isImporting = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Dynamically get the real file name
                 var fileName = "custom_model.litertlm"
                 context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     if (cursor.moveToFirst()) {
@@ -107,6 +101,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 1f)) }
+    var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importModel(it, context) }
@@ -141,16 +136,22 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 Switch(checked = llmEnabled, onCheckedChange = { viewModel.toggleLlm(it) })
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Use GPU Acceleration", style = MaterialTheme.typography.bodyLarge)
-                    Text("Warning: Turn off if the camera crashes!", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Hardware Acceleration", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                listOf("CPU", "GPU", "NPU").forEach { backend ->
+                    FilterChip(
+                        selected = aiBackend == backend,
+                        onClick = { 
+                            aiBackend = backend
+                            prefs.edit().putString("ai_backend", backend).apply()
+                            viewModel.reinitializeAi()
+                        },
+                        label = { Text(backend) }
+                    )
                 }
-                Switch(checked = viewModel.useGpu, onCheckedChange = { viewModel.setGpu(context, it) })
             }
             
             Spacer(modifier = Modifier.height(24.dp))
@@ -175,8 +176,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Dynamic Model Loading", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Select any .litertlm or .bin model from your phone's storage to use as the AI brain.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(modifier = Modifier.height(16.dp))
             
             Button(
                 onClick = { filePicker.launch(arrayOf("*/*")) },
