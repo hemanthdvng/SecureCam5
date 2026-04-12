@@ -1,26 +1,36 @@
 package com.securecam.data.repository
 
+import com.securecam.data.local.LogDao
+import com.securecam.data.local.SecurityLogEntity
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
 data class SecurityEvent(
-    val id: String = java.util.UUID.randomUUID().toString(),
-    val type: String, // "MOTION", "FACE_KNOWN", "FACE_UNKNOWN", "LLM_INSIGHT"
+    val type: String,
     val description: String,
-    val confidence: Float,
-    val timestamp: Long = System.currentTimeMillis()
+    val confidence: Float
 )
 
 @Singleton
-class EventRepository @Inject constructor() {
-    
-    // extraBufferCapacity ensures WebRTC/UI doesn't miss events if temporarily suspended
-    private val _securityEvents = MutableSharedFlow<SecurityEvent>(extraBufferCapacity = 50)
+class EventRepository @Inject constructor(
+    private val logDao: LogDao
+) {
+    private val _securityEvents = MutableSharedFlow<SecurityEvent>(replay = 1)
     val securityEvents = _securityEvents.asSharedFlow()
 
-    fun emitEvent(event: SecurityEvent) {
-        _securityEvents.tryEmit(event)
+    suspend fun emitEvent(event: SecurityEvent) {
+        _securityEvents.emit(event)
+        
+        // Save the event permanently
+        logDao.insertLog(
+            SecurityLogEntity(
+                timestamp = System.currentTimeMillis(),
+                type = event.type,
+                description = event.description,
+                confidence = event.confidence
+            )
+        )
     }
 }
