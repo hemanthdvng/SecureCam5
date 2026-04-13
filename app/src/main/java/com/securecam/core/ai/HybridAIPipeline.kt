@@ -48,7 +48,6 @@ class HybridAIPipeline @Inject constructor(
 
     fun start() {
         llmAnalyzer.initialize { result -> isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) }
-        // Biometric Engine initialize is now handled dynamically in the init block listener
     }
 
     fun stop() {
@@ -68,24 +67,26 @@ class HybridAIPipeline @Inject constructor(
                 
                 if (isFaceRecogEnabledSetting) {
                     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-                    val savedEmbeddingStr = prefs.getString("authorized_face_vector", "") ?: ""
+                    val savedFacesJson = prefs.getString("authorized_faces", "[]") ?: "[]"
+                    val type = object : TypeToken<List<RegisteredFace>>() {}.type
+                    val savedFaces: List<RegisteredFace> = Gson().fromJson(savedFacesJson, type) ?: emptyList()
                     var isFaceAuthorized = false
                     
-                    if (savedEmbeddingStr.isNotBlank()) {
+                    if (savedFaces.isNotEmpty()) {
                         val currentFaceVector = biometricEngine.getFaceEmbedding(bitmap)
                         if (currentFaceVector != null) {
-                            val type = object : TypeToken<FloatArray>() {}.type
-                            val savedFaceVector: FloatArray = Gson().fromJson(savedEmbeddingStr, type)
-                            
-                            val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, savedFaceVector)
-                            if (similarity > 0.65f) {
-                                isFaceAuthorized = true
+                            for (face in savedFaces) {
+                                val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, face.vector)
+                                if (similarity > 0.65f) {
+                                    isFaceAuthorized = true
+                                    break
+                                }
                             }
                         }
                     }
 
                     if (isFaceAuthorized) {
-                        eventRepository.emitEvent(SecurityEvent("BIOMETRIC", "🛡️ Authorized Face Detected (Local Match). Disabling Alerts.", 1.0f))
+                        eventRepository.emitEvent(SecurityEvent("BIOMETRIC", "🛡️ Authorized Face Detected. Disabling Alerts.", 1.0f))
                         bitmap.recycle()
                         return@launch
                     }
