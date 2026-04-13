@@ -22,7 +22,6 @@ class DvrEngine(private val context: Context) {
         currentDir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "SecureCam_Alert_$timeStamp")
         currentDir?.mkdirs()
         
-        // Record 50 frames at 5fps = 10 seconds of video
         CoroutineScope(Dispatchers.IO).launch {
             delay(10000)
             isRecording = false
