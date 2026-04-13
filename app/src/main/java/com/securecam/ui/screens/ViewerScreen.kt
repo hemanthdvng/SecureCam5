@@ -8,13 +8,17 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
@@ -183,32 +187,66 @@ fun ViewerScreen(navController: NavController) {
                         Text("JOIN STREAM")
                     }
                 } else {
+                    // --- UI REDESIGN: Circular Icon Buttons ---
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
-                        Button(onClick = { sendCommand("CMD_SIREN") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))) {
-                            Text("🚨 Siren")
+                        Button(
+                            onClick = { sendCommand("CMD_SIREN") }, 
+                            shape = CircleShape,
+                            modifier = Modifier.size(64.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
+                        ) {
+                            Text("🚨", fontSize = 28.sp)
                         }
-                        Button(onClick = { sendCommand("CMD_FLASH") }) {
-                            Text("🔦 Flash")
+                        Button(
+                            onClick = { sendCommand("CMD_FLASH") }, 
+                            shape = CircleShape,
+                            modifier = Modifier.size(64.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF512DA8))
+                        ) {
+                            Text("🔦", fontSize = 28.sp)
                         }
-                        Button(onClick = { sendCommand("CMD_SWITCH_CAM") }) {
-                            Text("🔄 Flip")
+                        Button(
+                            onClick = { sendCommand("CMD_SWITCH_CAM") }, 
+                            shape = CircleShape,
+                            modifier = Modifier.size(64.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
+                        ) {
+                            Text("🔄", fontSize = 28.sp)
                         }
-                        Button(onClick = { sendCommand("CMD_FORCE_SCAN") }) {
-                            Text("🔍 Scan")
+                        Button(
+                            onClick = { sendCommand("CMD_FORCE_SCAN") }, 
+                            shape = CircleShape,
+                            modifier = Modifier.size(64.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF388E3C))
+                        ) {
+                            Text("🔍", fontSize = 28.sp)
                         }
                     }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    // --- UI REDESIGN: Large Pill Button ---
                     Button(
                         onClick = { 
                             isMicActive = !isMicActive
                             localAudioTrack?.setEnabled(isMicActive)
                         },
+                        shape = RoundedCornerShape(32.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = if (isMicActive) Color(0xFF388E3C) else Color(0xFF616161)),
-                        modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(56.dp)
+                        modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(64.dp)
                     ) {
-                        Text(if (isMicActive) "🎤 MIC ACTIVE (Tap to Mute)" else "🔇 PUSH TO TALK")
+                        Text(
+                            text = if (isMicActive) "🎤 MIC ACTIVE (Tap to Mute)" else "🔇 PUSH TO TALK",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
