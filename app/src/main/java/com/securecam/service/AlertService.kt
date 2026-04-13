@@ -41,7 +41,6 @@ class AlertService : LifecycleService() {
         super.onCreate()
         createNotificationChannel()
         
-        // CRITICAL FIX: Graceful fallback for API levels
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(202, createForegroundNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -64,13 +63,23 @@ class AlertService : LifecycleService() {
         val prefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val mode = prefs.getString("viewer_mode", "Firebase")
         
+        var lastPopupText = ""
+        var lastPopupTime = 0L
+
         CoroutineScope(Dispatchers.IO).launch {
             eventRepository.securityEvents.collect { event ->
                 val popupEnabled = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).getBoolean("enable_notifications", true)
                 val isSafe = event.description.contains("[STATUS_SAFE]") || event.description.contains("CLEAR")
                 
-                if (popupEnabled && !isSafe && event.type != "REMOTE_ALERT") {
-                    showHeadsUpNotification(event.description)
+                // CRITICAL FIX: Removed the "REMOTE_ALERT" block so Viewers can get background popups.
+                // Added a 5-second timer instead so the Camera device doesn't double-popup on the same threat.
+                if (popupEnabled && !isSafe) {
+                    val now = System.currentTimeMillis()
+                    if (event.description != lastPopupText || (now - lastPopupTime > 5000)) {
+                        lastPopupText = event.description
+                        lastPopupTime = now
+                        showHeadsUpNotification(event.description)
+                    }
                 }
             }
         }
