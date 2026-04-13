@@ -187,7 +187,6 @@ fun ViewerScreen(navController: NavController) {
             }
         }
         
-        // --- VAULT WEBVIEW POPUP ---
         if (showVault) {
             AlertDialog(
                 onDismissRequest = { showVault = false },
