@@ -50,7 +50,6 @@ class HybridAIPipeline @Inject constructor(
                             biometricEngine.close()
                         }
                     } catch (e: Exception) {
-                        // CRITICAL FIX: Catch network drops and corrupt files during init to prevent app crash
                         Log.e("HybridAIPipeline", "Failed to initialize BiometricEngine", e)
                     }
                 }
@@ -59,7 +58,17 @@ class HybridAIPipeline @Inject constructor(
     }
 
     fun start() {
-        llmAnalyzer.initialize { result -> isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) }
+        llmAnalyzer.initialize { result -> 
+            isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) 
+            aiScope.launch {
+                // CRITICAL FIX: Emit systemic feedback to the UI list so you know if the LLM actually booted
+                if (isLlmInitialized) {
+                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Engine Initialized & Online.", 1.0f))
+                } else {
+                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Failed to load. Did you import a valid .litertlm model in Settings?", 1.0f))
+                }
+            }
+        }
     }
 
     fun stop() {
@@ -72,17 +81,14 @@ class HybridAIPipeline @Inject constructor(
     fun processFrame(bitmap: Bitmap) {
         aiScope.launch {
             try {
-                if (!isLlmEnabledSetting || !isLlmInitialized || isLlmBusy) {
-                    bitmap.recycle()
-                    return@launch
-                }
+                var skipLlm = false
                 
+                // CRITICAL FIX: Run Face Recognition FIRST, fully independent of LLM readiness
                 if (isFaceRecogEnabledSetting) {
                     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                     val savedFacesJson = prefs.getString("authorized_faces", "[]") ?: "[]"
                     val type = object : TypeToken<List<RegisteredFace>>() {}.type
                     val savedFaces: List<RegisteredFace> = Gson().fromJson(savedFacesJson, type) ?: emptyList()
-                    var isFaceAuthorized = false
                     
                     if (savedFaces.isNotEmpty()) {
                         try {
@@ -91,7 +97,8 @@ class HybridAIPipeline @Inject constructor(
                                 for (face in savedFaces) {
                                     val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, face.vector)
                                     if (similarity > 0.65f) {
-                                        isFaceAuthorized = true
+                                        eventRepository.emitEvent(SecurityEvent("BIOMETRIC", "🛡️ Authorized Face Detected: ${face.name}", 1.0f))
+                                        skipLlm = true
                                         break
                                     }
                                 }
@@ -100,12 +107,16 @@ class HybridAIPipeline @Inject constructor(
                             Log.e("HybridAIPipeline", "Face Embedding failed", e)
                         }
                     }
+                }
 
-                    if (isFaceAuthorized) {
-                        eventRepository.emitEvent(SecurityEvent("BIOMETRIC", "🛡️ Authorized Face Detected. Disabling Alerts.", 1.0f))
-                        bitmap.recycle()
-                        return@launch
-                    }
+                if (skipLlm) {
+                    bitmap.recycle()
+                    return@launch
+                }
+                
+                if (!isLlmEnabledSetting || !isLlmInitialized || isLlmBusy) {
+                    bitmap.recycle()
+                    return@launch
                 }
                 
                 triggerLlmAnalysis(bitmap)
