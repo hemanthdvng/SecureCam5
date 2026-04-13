@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.media.RingtoneManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -59,6 +60,10 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     var streamStatus by remember { mutableStateOf("Initializing Hardware...") }
     val alertHistory = remember { mutableStateListOf<String>() }
     var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
+    
+    // Command Handlers
+    val ringtone = remember { RingtoneManager.getRingtone(context, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)) }
+    var forceScanTrigger by remember { mutableStateOf(0) }
 
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     val scanIntervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
@@ -66,13 +71,14 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPermission = it }
     LaunchedEffect(Unit) { if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(forceScanTrigger) {
         while(isActive) {
-            delay(scanIntervalMs)
+            delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
             localRenderer.addFrameListener({ bitmap ->
                 val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
                 viewModel.aiPipeline.processFrame(bmpCopy)
             }, 0.5f)
+            if (forceScanTrigger > 0) forceScanTrigger = 0 // Reset override
         }
     }
 
@@ -108,9 +114,46 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     signalClient.sendSignal("ICE", json)
                 }
             }
+            
+            // New: Listen for Remote Viewer Commands
+            override fun onDataChannel(dc: DataChannel?) {
+                dc?.registerObserver(object : DataChannel.Observer {
+                    override fun onBufferedAmountChange(p0: Long) {}
+                    override fun onStateChange() {}
+                    override fun onMessage(buffer: DataChannel.Buffer?) {
+                        buffer?.data?.let { byteBuffer ->
+                            val bytes = ByteArray(byteBuffer.remaining())
+                            byteBuffer.get(bytes)
+                            val command = String(bytes, Charsets.UTF_8)
+                            
+                            CoroutineScope(Dispatchers.Main).launch {
+                                when (command) {
+                                    "CMD_SIREN" -> {
+                                        if (ringtone.isPlaying) ringtone.stop() else ringtone.play()
+                                        alertHistory.add(0, "[SYSTEM] Siren toggled remotely.")
+                                    }
+                                    "CMD_SWITCH_CAM" -> {
+                                        rtcManager.switchCamera()
+                                        alertHistory.add(0, "[SYSTEM] Camera lens switched remotely.")
+                                    }
+                                    "CMD_FORCE_SCAN" -> {
+                                        forceScanTrigger++
+                                        alertHistory.add(0, "[SYSTEM] Remote Force Scan initiated.")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+            }
         }
         
         val peerConnection = rtcManager.createPeerConnection(observer)
+        
+        // Audio support so we can hear the Viewer
+        val localAudio = rtcManager.createLocalAudioTrack()
+        localAudio?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
+
         dataChannel = peerConnection?.createDataChannel("telemetry", DataChannel.Init())
         val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
         localTrack?.let { peerConnection?.addTrack(it, listOf("stream_1")) }
@@ -142,6 +185,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
 
         onDispose {
             try { localRenderer.release() } catch(e: Exception){}
+            if (ringtone.isPlaying) ringtone.stop()
             dataChannel?.dispose()
             peerConnection?.dispose()
             rtcManager.dispose()
@@ -160,8 +204,9 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 items(alertHistory) { alert ->
-                    val isSafe = alert.contains("CLEAR")
-                    val bgColor = if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
+                    val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]")
+                    val isSystem = alert.contains("[SYSTEM]")
+                    val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
                     Card(
                         colors = CardDefaults.cardColors(containerColor = bgColor),
                         modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
