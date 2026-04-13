@@ -35,7 +35,10 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import kotlin.math.roundToInt
 import java.util.UUID
+import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
