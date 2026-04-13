@@ -100,7 +100,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
         
         var forceScanTrigger by remember { mutableStateOf(0) }
-        var isScreenFlashActive by remember { mutableStateOf(false) }
         var isScreaming by remember { mutableStateOf(false) }
         var tts: TextToSpeech? by remember { mutableStateOf(null) }
         
@@ -114,6 +113,23 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val localServer = remember { LocalSignalingServer(8081, securityToken) }
 
         val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
+        
+        // CRITICAL FIX: Connect CMD_FLASH to physical CameraManager Torch instead of screen brightness
+        var isTorchOn by remember { mutableStateOf(false) }
+        val cameraManager = remember { context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager }
+
+        LaunchedEffect(isTorchOn) {
+            try {
+                // Find back camera with flash
+                val cameraId = cameraManager.cameraIdList.firstOrNull { 
+                    cameraManager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
+                } ?: cameraManager.cameraIdList[0]
+                
+                cameraManager.setTorchMode(cameraId, isTorchOn)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
 
         DisposableEffect(Unit) {
             tts = TextToSpeech(context) { status ->
@@ -128,13 +144,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 tts?.shutdown() 
                 activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
-        }
-
-        LaunchedEffect(isScreenFlashActive) {
-            val window = activity?.window
-            val params = window?.attributes
-            params?.screenBrightness = if (isScreenFlashActive) 1.0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-            window?.attributes = params
         }
 
         LaunchedEffect(isScreaming) {
@@ -268,7 +277,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                 "CMD_SIREN" -> { isScreaming = !isScreaming; alertHistory.add(0, "[SYSTEM] Siren toggled.") }
                                 "CMD_SWITCH_CAM" -> { rtcManager.switchCamera(); alertHistory.add(0, "[SYSTEM] Lens switched.") }
                                 "CMD_FORCE_SCAN" -> { forceScanTrigger++; alertHistory.add(0, "[SYSTEM] Scan forced.") }
-                                "CMD_FLASH" -> { isScreenFlashActive = !isScreenFlashActive; alertHistory.add(0, "[SYSTEM] Strobe toggled.") }
+                                "CMD_FLASH" -> { isTorchOn = !isTorchOn; alertHistory.add(0, "[SYSTEM] Camera LED Torch toggled.") }
                             }
                         }
                     }
@@ -322,6 +331,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             onDispose {
                 try { localRenderer.release() } catch(e: Exception){}
                 isScreaming = false
+                isTorchOn = false
                 mjpegServer.stop()
                 localServer.stop()
                 dataChannel?.dispose()
@@ -331,9 +341,9 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
-        Box(modifier = Modifier.fillMaxSize().background(if (isScreenFlashActive) Color.White else Color.Black)) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             
-            if (!isScreenFlashActive) AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
+            AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
 
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
