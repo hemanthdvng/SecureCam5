@@ -51,6 +51,19 @@ class AlertService : LifecycleService() {
     private fun initListeners() {
         val prefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val mode = prefs.getString("viewer_mode", "Firebase")
+        
+        // Listen to Local Repository Events (Enables Camera Mode Popups)
+        CoroutineScope(Dispatchers.IO).launch {
+            eventRepository.securityEvents.collect { event ->
+                val popupEnabled = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).getBoolean("enable_notifications", true)
+                val isSafe = event.description.contains("[STATUS_SAFE]") || event.description.contains("CLEAR")
+                
+                if (popupEnabled && !isSafe && event.type != "REMOTE_ALERT") {
+                    showHeadsUpNotification(event.description)
+                }
+            }
+        }
+
         if (mode == "Local WiFi") {
             startLocalTcpListener()
         } else {
@@ -77,23 +90,15 @@ class AlertService : LifecycleService() {
                         val line = reader.readLine() ?: break
                         val map = Gson().fromJson(line, Map::class.java)
                         
-                        // Catch the TCP Alert Ping directly from the Camera
                         if (map["type"] == "ALERT") {
                             val text = map["text"] as? String ?: ""
-                            val popupEnabled = prefs.getBoolean("enable_notifications", true)
-                            
                             CoroutineScope(Dispatchers.IO).launch {
                                 eventRepository.emitEvent(SecurityEvent("REMOTE_ALERT", text, 1.0f))
-                            }
-                            
-                            val isSafe = text.contains("[STATUS_SAFE]") || text.contains("CLEAR")
-                            if (popupEnabled && !isSafe) {
-                                showHeadsUpNotification(text)
                             }
                         }
                     }
                 } catch(e: Exception) {
-                    delay(5000) // Backoff before reconnecting
+                    delay(5000)
                 }
             }
         }
@@ -105,14 +110,17 @@ class AlertService : LifecycleService() {
             val dbUrl = prefs.getString("fb_db_url", "") ?: ""
             val apiKey = prefs.getString("fb_api_key", "") ?: ""
             val appId = prefs.getString("fb_app_id", "") ?: ""
+            val token = prefs.getString("security_token", "") ?: ""
 
-            if (dbUrl.isNotBlank() && apiKey.isNotBlank() && appId.isNotBlank()) {
+            if (dbUrl.isNotBlank() && apiKey.isNotBlank() && appId.isNotBlank() && token.isNotBlank()) {
                 if (FirebaseApp.getApps(this).isEmpty()) {
                     val options = FirebaseOptions.Builder().setDatabaseUrl(dbUrl).setApiKey(apiKey).setApplicationId(appId).build()
                     FirebaseApp.initializeApp(this, options)
                 }
                 val db = FirebaseDatabase.getInstance()
-                val query = db.getReference("securecam/alerts").orderByChild("timestamp").limitToLast(1)
+                
+                // CRITICAL FIX: Targeted path filtering prevents listening to the whole parent directory
+                val query = db.getReference("securecam/alerts/$token").orderByChild("timestamp").limitToLast(1)
 
                 query.addChildEventListener(object : ChildEventListener {
                     override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
@@ -120,14 +128,12 @@ class AlertService : LifecycleService() {
                         val text = snapshot.child("text").getValue(String::class.java) ?: "Unknown Alert"
                         val currentPrefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                         val lastProcessed = currentPrefs.getLong("last_processed_alert", 0L)
-                        val popupEnabled = currentPrefs.getBoolean("enable_notifications", true)
 
                         if (timestamp > lastProcessed) {
                             currentPrefs.edit().putLong("last_processed_alert", timestamp).apply()
                             CoroutineScope(Dispatchers.IO).launch {
                                 eventRepository.emitEvent(SecurityEvent("REMOTE_ALERT", text, 1.0f))
                             }
-                            if (popupEnabled) showHeadsUpNotification(text)
                         }
                     }
                     override fun onChildChanged(s: DataSnapshot, p: String?) {}
