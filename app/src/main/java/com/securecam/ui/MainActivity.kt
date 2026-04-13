@@ -24,7 +24,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // CRITICAL FIX: Wrapped in try-catch to prevent ActivityNotFoundException on unsupported OEMs
+        // FIX: Removed the broken in-line permission launcher here. It is now safely handled inside MainScreen.kt Compose layer.
+        
         try {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !powerManager.isIgnoringBatteryOptimizations(packageName)) {
@@ -33,11 +34,8 @@ class MainActivity : ComponentActivity() {
                 }
                 startActivity(intent)
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) {}
         
-        // CRITICAL FIX: Graceful service boot sequence
         try {
             val serviceIntent = Intent(this, AlertService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -45,9 +43,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 startService(serviceIntent)
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) {}
 
         setContent {
             MaterialTheme {
