@@ -91,6 +91,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f)) }
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", true)) }
+    var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
     
     var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
@@ -122,6 +123,23 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth())
+
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text("Device Alerts & Notifications", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Enable Popup Notifications", style = MaterialTheme.typography.bodyLarge)
+                    Text("Show Android banner when app is closed", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(checked = popupNotifications, onCheckedChange = { 
+                    popupNotifications = it; prefs.edit().putBoolean("enable_notifications", it).apply() 
+                })
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
@@ -175,7 +193,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Spacer(modifier = Modifier.height(16.dp))
             Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
-            // Updated valueRange to start at 0.0f
             Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.0f..1.0f, steps = 100)
 
             Spacer(modifier = Modifier.height(24.dp))
