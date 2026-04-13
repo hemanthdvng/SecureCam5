@@ -24,16 +24,12 @@ class WatchTowerService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // ARCHITECTURE FIX: Lock the process into Foreground state to prevent the OS from killing the AI/WebRTC threads when minimized
         startForeground(NOTIFICATION_ID, createNotification())
-        
-        // TODO: Initialize Headless CameraX here
-        // We will bind an ImageAnalysis use-case to this service's lifecycle
-        // and route frames to aiPipeline.processFrame(bitmap)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        // START_STICKY ensures OS restarts the service if it's killed for memory
         return START_STICKY 
     }
 
@@ -52,9 +48,14 @@ class WatchTowerService : LifecycleService() {
     private fun createNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("SecureCam WatchTower Active")
-            .setContentText("Local AI is monitoring in the background.")
+            .setContentText("Camera, Networking, and AI logic are locked to memory.")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setOngoing(true)
             .build()
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        stopForeground(true)
     }
 }
