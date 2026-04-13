@@ -44,6 +44,7 @@ import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
+import org.webrtc.EglRenderer
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -114,21 +115,16 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
 
         val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
         
-        // CRITICAL FIX: Connect CMD_FLASH to physical CameraManager Torch instead of screen brightness
         var isTorchOn by remember { mutableStateOf(false) }
         val cameraManager = remember { context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager }
 
         LaunchedEffect(isTorchOn) {
             try {
-                // Find back camera with flash
                 val cameraId = cameraManager.cameraIdList.firstOrNull { 
                     cameraManager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
                 } ?: cameraManager.cameraIdList[0]
-                
                 cameraManager.setTorchMode(cameraId, isTorchOn)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            } catch (e: Exception) {}
         }
 
         DisposableEffect(Unit) {
@@ -159,28 +155,36 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
-        LaunchedEffect(Unit) {
-            while(isActive) {
+        // CRITICAL BUG 1 FIX: Do not register frame listener in a loop. Register once, clean up on dispose.
+        DisposableEffect(localRenderer) {
+            val listener = EglRenderer.FrameListener { bitmap ->
                 try {
-                    localRenderer.addFrameListener({ bitmap ->
-                        val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                        mjpegServer.updateFrame(bmpCopy)
-                        dvrEngine.appendFrame(bmpCopy)
-                        val old = latestBitmapRef.getAndSet(bmpCopy)
-                        old?.recycle()
-                    }, 0.5f)
+                    val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    mjpegServer.updateFrame(bmpCopy)
+                    dvrEngine.appendFrame(bmpCopy)
+                    val old = latestBitmapRef.getAndSet(bmpCopy)
+                    old?.recycle()
                 } catch(e: Exception) {}
-                delay(200)
+            }
+            localRenderer.addFrameListener(listener, 0.5f)
+            onDispose {
+                localRenderer.removeFrameListener(listener)
             }
         }
 
+        // CRITICAL BUG 2 FIX: Atomic ownership via getAndSet(null) prevents Race Conditions
         LaunchedEffect(forceScanTrigger) {
             while(isActive) {
                 delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
-                latestBitmapRef.get()?.let { bmp ->
+                latestBitmapRef.getAndSet(null)?.let { bmp ->
                     if (!bmp.isRecycled) {
-                        val copy = bmp.copy(Bitmap.Config.ARGB_8888, false)
-                        viewModel.aiPipeline.processFrame(copy)
+                        try {
+                            val copy = bmp.copy(Bitmap.Config.ARGB_8888, false)
+                            if (copy != null) {
+                                viewModel.aiPipeline.processFrame(copy)
+                            }
+                        } catch (e: Exception) {}
+                        bmp.recycle()
                     }
                 }
                 if (forceScanTrigger > 0) forceScanTrigger = 0
@@ -263,7 +267,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                     putString("prompt_sys", map["prompt_sys"] as? String ?: "")
                                     putString("prompt_usr", map["prompt_usr"] as? String ?: "")
                                     putBoolean("llm_enabled", map["llm_enabled"] as? Boolean ?: true)
-                                    putBoolean("face_recog_enabled", map["face_recog_enabled"] as? Boolean ?: true)
+                                    putBoolean("face_recog_enabled", map["face_recog_enabled"] as? Boolean ?: false)
                                 }.apply()
                                 CoroutineScope(Dispatchers.Main).launch {
                                     alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer successfully.")
@@ -342,7 +346,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         }
 
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            
             AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
 
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
