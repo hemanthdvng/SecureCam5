@@ -1,8 +1,10 @@
 package com.securecam.ui.screens
 
 import android.content.Context
+import android.graphics.ImageDecoder
 import android.net.Uri
-import android.provider.OpenableColumns
+import android.os.Build
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +25,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
+import com.google.gson.Gson
+import com.securecam.core.ai.BiometricEngine
 import com.securecam.core.ai.HybridAIPipeline
 import com.securecam.data.repository.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,9 +35,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import kotlin.math.roundToInt
-import javax.inject.Inject
 import java.util.UUID
 
 @HiltViewModel
@@ -42,33 +43,41 @@ class SettingsViewModel @Inject constructor(
     private val aiPipeline: HybridAIPipeline
 ) : ViewModel() {
     val isLlmEnabled = repository.isLlmEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
-    var isImporting by mutableStateOf(false)
-        private set
-    var currentModelName by mutableStateOf("None")
-
-    fun loadPrefs(context: Context) {
-        val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-        currentModelName = prefs.getString("selected_model", "None") ?: "None"
-    }
-
+    
     fun toggleLlm(enabled: Boolean) { viewModelScope.launch { repository.setLlmEnabled(enabled) } }
 
-    fun importModel(uri: Uri, context: Context) {
-        isImporting = true
+    fun processFaceRegistration(uri: Uri, context: Context, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
+            val biometricEngine = BiometricEngine(context)
+            biometricEngine.initialize()
             try {
-                var fileName = "custom_model.litertlm"
-                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    if (cursor.moveToFirst()) fileName = cursor.getString(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME) ?: 0)
+                val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri))
+                } else {
+                    MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
                 }
-                val destFile = File(context.filesDir, fileName)
-                context.contentResolver.openInputStream(uri)?.use { input -> destFile.outputStream().use { output -> input.copyTo(output) } }
-                context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
-                currentModelName = fileName
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Model $fileName Loaded!", Toast.LENGTH_LONG).show() }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Import Failed: ${e.message}", Toast.LENGTH_LONG).show() }
-            } finally { isImporting = false }
+                
+                val copyBmp = bitmap.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                val embedding = biometricEngine.getFaceEmbedding(copyBmp)
+                
+                if (embedding != null) {
+                    val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                    prefs.edit().putString("authorized_face_vector", Gson().toJson(embedding)).apply()
+                    withContext(Dispatchers.Main) { 
+                        Toast.makeText(context, "Face Registered Successfully!", Toast.LENGTH_LONG).show() 
+                        onComplete(true)
+                    }
+                } else {
+                    withContext(Dispatchers.Main) { 
+                        Toast.makeText(context, "Could not extract face data.", Toast.LENGTH_LONG).show() 
+                        onComplete(false)
+                    }
+                }
+            } catch(e: Exception) {
+                withContext(Dispatchers.Main) { onComplete(false) }
+            } finally {
+                biometricEngine.close()
+            }
         }
     }
 }
@@ -81,7 +90,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     val clipboardManager = LocalClipboardManager.current
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     
-    // FIX: Move UUID generation inside the remember block so Compose doesn't swallow the state mutation during render
     var securityToken by remember { 
         mutableStateOf(
             prefs.getString("security_token", "").takeIf { !it.isNullOrBlank() } ?: UUID.randomUUID().toString().substring(0, 8).also {
@@ -96,16 +104,20 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f)) }
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", true)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
-    var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
     var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
-    var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
-    var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
-    var knownPersons by remember { mutableStateOf(prefs.getString("known_persons", "") ?: "") }
+    
+    var hasRegisteredFace by remember { mutableStateOf((prefs.getString("authorized_face_vector", "") ?: "").isNotBlank()) }
 
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { viewModel.importModel(it, context) } }
-    LaunchedEffect(Unit) { viewModel.loadPrefs(context) }
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> 
+        uri?.let { 
+            Toast.makeText(context, "Processing Biometrics...", Toast.LENGTH_SHORT).show()
+            viewModel.processFaceRegistration(it, context) { success ->
+                hasRegisteredFace = success
+            }
+        }
+    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }) }
@@ -121,7 +133,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = targetIp, onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, label = { Text(if (viewerMode == "Local WiFi") "Camera IP Address (e.g. 192.168.1.5)" else "IP Field Disabled (Firebase Active)") }, enabled = viewerMode == "Local WiFi", modifier = Modifier.fillMaxWidth())
-            
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Token (Required for Both Modes)") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
@@ -129,18 +140,32 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
-            Text("Authorized Personnel (Face Filter)", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            // --- NATIVE BIOMETRIC REGISTRATION ---
+            Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = knownPersons, 
-                onValueChange = { knownPersons = it; prefs.edit().putString("known_persons", it).apply() }, 
-                label = { Text("Describe safe people (e.g. 'Man with glasses')") }, 
-                modifier = Modifier.fillMaxWidth()
-            )
+            Text("Upload a clear portrait of authorized personnel. The AI will extract their facial vector and store it entirely offline. If this face is detected, alarms are disabled.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Button(
+                onClick = { photoPicker.launch("image/*") }, 
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = if (hasRegisteredFace) Color(0xFF388E3C) else MaterialTheme.colorScheme.primary)
+            ) { 
+                Text(if (hasRegisteredFace) "✅ Authorized Face Registered (Tap to Replace)" else "📸 Upload Face Photo") 
+            }
+            if (hasRegisteredFace) {
+                TextButton(onClick = { 
+                    prefs.edit().remove("authorized_face_vector").apply()
+                    hasRegisteredFace = false
+                }, modifier = Modifier.align(Alignment.End)) {
+                    Text("Clear Biometrics", color = Color.Red)
+                }
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
+
             Text("Firebase Credentials", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth(), enabled = viewerMode == "Firebase")
@@ -164,14 +189,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 Switch(checked = debugMode, onCheckedChange = { debugMode = it; prefs.edit().putBoolean("debug_mode", it).apply() })
             }
             
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("Hardware Acceleration", style = MaterialTheme.typography.titleMedium)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("CPU", "GPU", "NPU").forEach { backend ->
-                    Button(onClick = { aiBackend = backend; prefs.edit().putString("ai_backend", backend).apply() }, colors = ButtonDefaults.buttonColors(containerColor = if (aiBackend == backend) MaterialTheme.colorScheme.primary else Color.DarkGray), modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text(backend) }
-                }
-            }
-
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
@@ -183,17 +200,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
             Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.0f..1.0f, steps = 100)
 
-            Spacer(modifier = Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(24.dp))
-            Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = sysPrompt, onValueChange = { sysPrompt = it; prefs.edit().putString("prompt_sys", it).apply() }, label = { Text("System Prompt") }, modifier = Modifier.fillMaxWidth())
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt") }, modifier = Modifier.fillMaxWidth())
-
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(onClick = { filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.isImporting) { Text(if (viewModel.isImporting) "Loading Model..." else "Select New Model") }
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
