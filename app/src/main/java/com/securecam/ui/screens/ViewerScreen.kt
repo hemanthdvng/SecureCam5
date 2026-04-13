@@ -51,7 +51,6 @@ fun ViewerScreen(navController: NavController) {
     var streamStatus by remember { mutableStateOf("Initializing Viewport...") }
     val alertHistory = remember { mutableStateListOf<String>() }
     
-    // Command Center State
     var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
     var localAudioTrack by remember { mutableStateOf<AudioTrack?>(null) }
     var isMicActive by remember { mutableStateOf(false) }
@@ -83,7 +82,7 @@ fun ViewerScreen(navController: NavController) {
                 track?.addSink(remoteRenderer)
             }
             override fun onDataChannel(dc: DataChannel?) {
-                dataChannel = dc // Save reference so UI can send commands back
+                dataChannel = dc
                 dc?.registerObserver(object : DataChannel.Observer {
                     override fun onBufferedAmountChange(p0: Long) {}
                     override fun onStateChange() {}
@@ -106,7 +105,6 @@ fun ViewerScreen(navController: NavController) {
         
         val peerConnection = rtcManager.createPeerConnection(observer)
         
-        // Initialize Audio (Muted by default to prevent echoes)
         localAudioTrack = rtcManager.createLocalAudioTrack()
         localAudioTrack?.setEnabled(false)
         localAudioTrack?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
@@ -162,7 +160,8 @@ fun ViewerScreen(navController: NavController) {
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     items(alertHistory) { alert ->
                         val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]")
-                        val bgColor = if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
+                        val isSystem = alert.contains("[SYSTEM]")
+                        val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
                         Card(
                             colors = CardDefaults.cardColors(containerColor = bgColor),
                             modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
@@ -172,10 +171,9 @@ fun ViewerScreen(navController: NavController) {
                     }
                 }
                 
-                Spacer(modifier = Modifier.height(160.dp)) // Leave room for controls
+                Spacer(modifier = Modifier.height(160.dp)) 
             }
 
-            // --- COMMAND CENTER UI ---
             Column(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).fillMaxWidth()) {
                 if (streamStatus != "LIVE STREAM ACTIVE") {
                     Button(
@@ -192,8 +190,11 @@ fun ViewerScreen(navController: NavController) {
                         Button(onClick = { sendCommand("CMD_SIREN") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))) {
                             Text("🚨 Siren")
                         }
+                        Button(onClick = { sendCommand("CMD_FLASH") }) {
+                            Text("🔦 Flash")
+                        }
                         Button(onClick = { sendCommand("CMD_SWITCH_CAM") }) {
-                            Text("🔄 Flip Cam")
+                            Text("🔄 Flip")
                         }
                         Button(onClick = { sendCommand("CMD_FORCE_SCAN") }) {
                             Text("🔍 Scan")
