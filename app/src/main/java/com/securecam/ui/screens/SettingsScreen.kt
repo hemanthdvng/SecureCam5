@@ -26,6 +26,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
+import com.canhub.cropper.CropImageContract
+import com.canhub.cropper.CropImageContractOptions
+import com.canhub.cropper.CropImageOptions
 import com.google.gson.Gson
 import com.securecam.core.ai.BiometricEngine
 import com.securecam.core.ai.HybridAIPipeline
@@ -47,6 +50,8 @@ class SettingsViewModel @Inject constructor(
     private val aiPipeline: HybridAIPipeline
 ) : ViewModel() {
     val isLlmEnabled = repository.isLlmEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    val isFaceRecogEnabled = repository.isFaceRecogEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    
     var isImporting by mutableStateOf(false)
         private set
     var currentModelName by mutableStateOf("None")
@@ -57,6 +62,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun toggleLlm(enabled: Boolean) { viewModelScope.launch { repository.setLlmEnabled(enabled) } }
+    fun toggleFaceRecog(enabled: Boolean) { viewModelScope.launch { repository.setFaceRecogEnabled(enabled) } }
 
     fun importModel(uri: Uri, context: Context) {
         isImporting = true
@@ -101,7 +107,7 @@ class SettingsViewModel @Inject constructor(
                     }
                 } else {
                     withContext(Dispatchers.Main) { 
-                        Toast.makeText(context, "Could not extract face data. Try a tight crop of the face.", Toast.LENGTH_LONG).show() 
+                        Toast.makeText(context, "Could not extract face data.", Toast.LENGTH_LONG).show() 
                         onComplete(false)
                     }
                 }
@@ -118,6 +124,7 @@ class SettingsViewModel @Inject constructor(
 @Composable
 fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = hiltViewModel()) {
     val llmEnabled by viewModel.isLlmEnabled.collectAsState()
+    val faceRecogEnabled by viewModel.isFaceRecogEnabled.collectAsState()
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -145,10 +152,12 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     
     var hasRegisteredFace by remember { mutableStateOf((prefs.getString("authorized_face_vector", "") ?: "").isNotBlank()) }
 
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> 
-        uri?.let { 
-            viewModel.processFaceRegistration(it, context) { success ->
-                hasRegisteredFace = success
+    val cropImageLauncher = rememberLauncherForActivityResult(CropImageContract()) { result ->
+        if (result.isSuccessful) {
+            result.uriContent?.let { uri ->
+                viewModel.processFaceRegistration(uri, context) { success ->
+                    hasRegisteredFace = success
+                }
             }
         }
     }
@@ -172,9 +181,13 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             }
             
             Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = targetIp, onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, label = { Text(if (viewerMode == "Local WiFi") "Camera IP Address (e.g. 192.168.1.5)" else "IP Field Disabled (Firebase Active)") }, enabled = viewerMode == "Local WiFi", modifier = Modifier.fillMaxWidth())
+            if (viewerMode == "Local WiFi") {
+                Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world. This keeps your stream direct and private without needing third-party cloud servers.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+            OutlinedTextField(value = targetIp, onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, label = { Text(if (viewerMode == "Local WiFi") "Camera IP Address (e.g. 192.168.1.5 or Tailscale IP)" else "IP Field Disabled (Firebase Active)") }, enabled = viewerMode == "Local WiFi", modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Token (Required for Both Modes)") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Token (Must match EXACTLY in Viewer App to connect)") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
@@ -182,11 +195,24 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Upload a closely cropped, square photo of your face (like a passport photo). The AI will extract the facial vector and store it offline.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Upload a photo of your face. You will be prompted to crop it to a tight square. The AI will extract the facial vector and store it offline.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
             
             Button(
-                onClick = { photoPicker.launch("image/*") }, 
+                onClick = { 
+                    cropImageLauncher.launch(
+                        CropImageContractOptions(
+                            uri = null,
+                            cropImageOptions = CropImageOptions(
+                                imageSourceIncludeCamera = true,
+                                imageSourceIncludeGallery = true,
+                                fixAspectRatio = true,
+                                aspectRatioX = 1,
+                                aspectRatioY = 1
+                            )
+                        )
+                    )
+                }, 
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = if (hasRegisteredFace) Color(0xFF388E3C) else MaterialTheme.colorScheme.primary)
             ) { 
@@ -225,6 +251,13 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                     Text("Current model: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(checked = llmEnabled, onCheckedChange = { viewModel.toggleLlm(it) })
+            }
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) { 
+                    Text("Enable Face Recognition", style = MaterialTheme.typography.bodyLarge) 
+                    Text("Load biometric engine to bypass alerts for known faces", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(checked = faceRecogEnabled, onCheckedChange = { viewModel.toggleFaceRecog(it) })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) { Text("Verbose Debug Mode", style = MaterialTheme.typography.bodyLarge) }
