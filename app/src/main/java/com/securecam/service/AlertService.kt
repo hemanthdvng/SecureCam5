@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -39,7 +40,14 @@ class AlertService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(202, createForegroundNotification())
+        
+        // CRITICAL FIX: Android 14+ Strict Foreground Service Enforcement
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(202, createForegroundNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(202, createForegroundNotification())
+        }
+        
         initListeners()
     }
 
@@ -52,7 +60,6 @@ class AlertService : LifecycleService() {
         val prefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val mode = prefs.getString("viewer_mode", "Firebase")
         
-        // Listen to Local Repository Events (Enables Camera Mode Popups)
         CoroutineScope(Dispatchers.IO).launch {
             eventRepository.securityEvents.collect { event ->
                 val popupEnabled = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).getBoolean("enable_notifications", true)
@@ -118,8 +125,6 @@ class AlertService : LifecycleService() {
                     FirebaseApp.initializeApp(this, options)
                 }
                 val db = FirebaseDatabase.getInstance()
-                
-                // CRITICAL FIX: Targeted path filtering prevents listening to the whole parent directory
                 val query = db.getReference("securecam/alerts/$token").orderByChild("timestamp").limitToLast(1)
 
                 query.addChildEventListener(object : ChildEventListener {
@@ -178,7 +183,7 @@ class AlertService : LifecycleService() {
         return NotificationCompat.Builder(this, "securecam_bg")
             .setContentTitle("SecureCam is Armed")
             .setContentText("Listening for offline security alerts...")
-            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .build()
     }
     
