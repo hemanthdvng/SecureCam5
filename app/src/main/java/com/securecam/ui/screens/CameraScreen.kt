@@ -116,53 +116,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     signalClient.sendSignal("ICE", json)
                 }
             }
-            
-            override fun onDataChannel(dc: DataChannel?) {
-                dc?.registerObserver(object : DataChannel.Observer {
-                    override fun onBufferedAmountChange(p0: Long) {}
-                    override fun onStateChange() {}
-                    override fun onMessage(buffer: DataChannel.Buffer?) {
-                        buffer?.data?.let { byteBuffer ->
-                            val bytes = ByteArray(byteBuffer.remaining())
-                            byteBuffer.get(bytes)
-                            val command = String(bytes, Charsets.UTF_8)
-                            
-                            CoroutineScope(Dispatchers.Main).launch {
-                                when (command) {
-                                    "CMD_SIREN" -> {
-                                        if (ringtone.isPlaying) ringtone.stop() else ringtone.play()
-                                        alertHistory.add(0, "[SYSTEM] Siren toggled remotely.")
-                                    }
-                                    "CMD_SWITCH_CAM" -> {
-                                        rtcManager.switchCamera()
-                                        alertHistory.add(0, "[SYSTEM] Camera lens switched remotely.")
-                                    }
-                                    "CMD_FORCE_SCAN" -> {
-                                        forceScanTrigger++
-                                        alertHistory.add(0, "[SYSTEM] Remote Force Scan initiated.")
-                                    }
-                                    "CMD_FLASH" -> {
-                                        isFlashOn = !isFlashOn
-                                        try {
-                                            val camId = cameraManager.cameraIdList.firstOrNull { id ->
-                                                cameraManager.getCameraCharacteristics(id).get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-                                            }
-                                            if (camId != null) {
-                                                cameraManager.setTorchMode(camId, isFlashOn)
-                                                alertHistory.add(0, "[SYSTEM] Flashlight toggled.")
-                                            } else {
-                                                alertHistory.add(0, "[SYSTEM] Flash not available on this lens.")
-                                            }
-                                        } catch (e: Exception) {
-                                            alertHistory.add(0, "[SYSTEM] Flash blocked by WebRTC lock. Try flipping camera.")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                })
-            }
         }
         
         val peerConnection = rtcManager.createPeerConnection(observer)
@@ -170,7 +123,53 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val localAudio = rtcManager.createLocalAudioTrack()
         localAudio?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
 
+        // BUG FIX: The Camera created the channel, so it must attach the listener immediately!
         dataChannel = peerConnection?.createDataChannel("telemetry", DataChannel.Init())
+        dataChannel?.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(p0: Long) {}
+            override fun onStateChange() {}
+            override fun onMessage(buffer: DataChannel.Buffer?) {
+                buffer?.data?.let { byteBuffer ->
+                    val bytes = ByteArray(byteBuffer.remaining())
+                    byteBuffer.get(bytes)
+                    val command = String(bytes, Charsets.UTF_8)
+                    
+                    CoroutineScope(Dispatchers.Main).launch {
+                        when (command) {
+                            "CMD_SIREN" -> {
+                                if (ringtone.isPlaying) ringtone.stop() else ringtone.play()
+                                alertHistory.add(0, "[SYSTEM] Siren toggled remotely.")
+                            }
+                            "CMD_SWITCH_CAM" -> {
+                                rtcManager.switchCamera()
+                                alertHistory.add(0, "[SYSTEM] Camera lens switched remotely.")
+                            }
+                            "CMD_FORCE_SCAN" -> {
+                                forceScanTrigger++
+                                alertHistory.add(0, "[SYSTEM] Remote Force Scan initiated.")
+                            }
+                            "CMD_FLASH" -> {
+                                isFlashOn = !isFlashOn
+                                try {
+                                    val camId = cameraManager.cameraIdList.firstOrNull { id ->
+                                        cameraManager.getCameraCharacteristics(id).get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                                    }
+                                    if (camId != null) {
+                                        cameraManager.setTorchMode(camId, isFlashOn)
+                                        alertHistory.add(0, "[SYSTEM] Flashlight toggled.")
+                                    } else {
+                                        alertHistory.add(0, "[SYSTEM] Flash not available on this lens.")
+                                    }
+                                } catch (e: Exception) {
+                                    alertHistory.add(0, "[SYSTEM] Flash blocked by WebRTC lock. Try flipping camera.")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+
         val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
         localTrack?.let { peerConnection?.addTrack(it, listOf("stream_1")) }
 
