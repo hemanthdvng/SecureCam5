@@ -61,9 +61,11 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     val alertHistory = remember { mutableStateListOf<String>() }
     var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
     
-    // Command Handlers
     val ringtone = remember { RingtoneManager.getRingtone(context, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)) }
     var forceScanTrigger by remember { mutableStateOf(0) }
+    
+    val cameraManager = remember { context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager }
+    var isFlashOn by remember { mutableStateOf(false) }
 
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     val scanIntervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
@@ -78,7 +80,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
                 viewModel.aiPipeline.processFrame(bmpCopy)
             }, 0.5f)
-            if (forceScanTrigger > 0) forceScanTrigger = 0 // Reset override
+            if (forceScanTrigger > 0) forceScanTrigger = 0
         }
     }
 
@@ -115,7 +117,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 }
             }
             
-            // New: Listen for Remote Viewer Commands
             override fun onDataChannel(dc: DataChannel?) {
                 dc?.registerObserver(object : DataChannel.Observer {
                     override fun onBufferedAmountChange(p0: Long) {}
@@ -140,6 +141,22 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                         forceScanTrigger++
                                         alertHistory.add(0, "[SYSTEM] Remote Force Scan initiated.")
                                     }
+                                    "CMD_FLASH" -> {
+                                        isFlashOn = !isFlashOn
+                                        try {
+                                            val camId = cameraManager.cameraIdList.firstOrNull { id ->
+                                                cameraManager.getCameraCharacteristics(id).get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                                            }
+                                            if (camId != null) {
+                                                cameraManager.setTorchMode(camId, isFlashOn)
+                                                alertHistory.add(0, "[SYSTEM] Flashlight toggled.")
+                                            } else {
+                                                alertHistory.add(0, "[SYSTEM] Flash not available on this lens.")
+                                            }
+                                        } catch (e: Exception) {
+                                            alertHistory.add(0, "[SYSTEM] Flash blocked by WebRTC lock. Try flipping camera.")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -150,7 +167,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         
         val peerConnection = rtcManager.createPeerConnection(observer)
         
-        // Audio support so we can hear the Viewer
         val localAudio = rtcManager.createLocalAudioTrack()
         localAudio?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
 
@@ -186,6 +202,9 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         onDispose {
             try { localRenderer.release() } catch(e: Exception){}
             if (ringtone.isPlaying) ringtone.stop()
+            try { 
+                cameraManager.cameraIdList.forEach { cameraManager.setTorchMode(it, false) }
+            } catch (e: Exception) {}
             dataChannel?.dispose()
             peerConnection?.dispose()
             rtcManager.dispose()
