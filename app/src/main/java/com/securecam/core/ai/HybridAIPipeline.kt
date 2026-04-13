@@ -33,16 +33,28 @@ class HybridAIPipeline @Inject constructor(
     private var isFaceRecogEnabledSetting = true
 
     init { 
-        aiScope.launch { settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it } } 
         aiScope.launch { 
-            settingsRepository.isFaceRecogEnabled.collect { enabled ->
-                isFaceRecogEnabledSetting = enabled
-                if (enabled) {
-                    biometricEngine.initialize()
-                } else {
-                    biometricEngine.close()
+            try {
+                settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it } 
+            } catch (e: Exception) { Log.e("HybridAIPipeline", "LLM Setting error", e) }
+        } 
+        
+        aiScope.launch { 
+            try {
+                settingsRepository.isFaceRecogEnabled.collect { enabled ->
+                    isFaceRecogEnabledSetting = enabled
+                    try {
+                        if (enabled) {
+                            biometricEngine.initialize()
+                        } else {
+                            biometricEngine.close()
+                        }
+                    } catch (e: Exception) {
+                        // CRITICAL FIX: Catch network drops and corrupt files during init to prevent app crash
+                        Log.e("HybridAIPipeline", "Failed to initialize BiometricEngine", e)
+                    }
                 }
-            }
+            } catch (e: Exception) { Log.e("HybridAIPipeline", "Face Setting error", e) }
         }
     }
 
@@ -52,7 +64,7 @@ class HybridAIPipeline @Inject constructor(
 
     fun stop() {
         llmAnalyzer.close()
-        biometricEngine.close()
+        try { biometricEngine.close() } catch (e: Exception) {}
         isLlmInitialized = false
         isLlmBusy = false
     }
@@ -73,15 +85,19 @@ class HybridAIPipeline @Inject constructor(
                     var isFaceAuthorized = false
                     
                     if (savedFaces.isNotEmpty()) {
-                        val currentFaceVector = biometricEngine.getFaceEmbedding(bitmap)
-                        if (currentFaceVector != null) {
-                            for (face in savedFaces) {
-                                val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, face.vector)
-                                if (similarity > 0.65f) {
-                                    isFaceAuthorized = true
-                                    break
+                        try {
+                            val currentFaceVector = biometricEngine.getFaceEmbedding(bitmap)
+                            if (currentFaceVector != null) {
+                                for (face in savedFaces) {
+                                    val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, face.vector)
+                                    if (similarity > 0.65f) {
+                                        isFaceAuthorized = true
+                                        break
+                                    }
                                 }
                             }
+                        } catch (e: Exception) {
+                            Log.e("HybridAIPipeline", "Face Embedding failed", e)
                         }
                     }
 
@@ -93,7 +109,9 @@ class HybridAIPipeline @Inject constructor(
                 }
                 
                 triggerLlmAnalysis(bitmap)
-            } catch (e: Throwable) { bitmap.recycle() }
+            } catch (e: Throwable) { 
+                bitmap.recycle() 
+            }
         }
     }
 
