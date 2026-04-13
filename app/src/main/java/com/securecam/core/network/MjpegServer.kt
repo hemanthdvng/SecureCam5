@@ -48,6 +48,7 @@ class MjpegServer(private val context: Context) {
 
                             val out = client?.getOutputStream()
                             
+                            // ROUTING ENGINE: Serve Vault HTML or Live MJPEG
                             if (requestLine.contains("GET /vault")) {
                                 val html = buildVaultHtml(requiredToken)
                                 out?.write(("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n$html").toByteArray())
@@ -118,6 +119,10 @@ class MjpegServer(private val context: Context) {
         val framesJson = if (frames.isEmpty()) "[]" else frames.joinToString("','", "['", "']")
         val firstFrame = frames.firstOrNull() ?: ""
         
+        // COMPILER FIX: Construct script tags outside raw string to bypass both HTML and Kotlin parsers
+        val sOpen = "<scr" + "ipt>"
+        val sClose = "</scr" + "ipt>"
+        
         return """
             <html><head><meta name='viewport' content='width=device-width, initial-scale=1'>
             <style>body{background:#0d1117; color:#c9d1d9; font-family:-apple-system, sans-serif; text-align:center; padding:16px; margin:0;} img{width:100%; border-radius:8px; border:2px solid #30363d;}</style></head>
@@ -125,7 +130,7 @@ class MjpegServer(private val context: Context) {
             <img id='player' src='/frame?id=$id&frame=$firstFrame&token=$token' />
             <p style='color:#8b949e; font-size:12px;'>Playing 10-Second Buffer...</p>
             <br><a href='/vault?token=$token' style='display:inline-block; padding:12px 24px; background:#1f6feb; border-radius:6px; color:white; text-decoration:none; font-weight:bold;'>⬅ Back to Vault</a>
-            <script>
+            $sOpen
                 const frames = $framesJson;
                 let i = 0;
                 if(frames.length > 1) {
@@ -134,7 +139,7 @@ class MjpegServer(private val context: Context) {
                         document.getElementById('player').src = '/frame?id=$id&frame=' + frames[i] + '&token=$token';
                     }, 200);
                 }
-            </scr${"i"}pt>
+            $sClose
             </body></html>
         """.trimIndent()
     }
