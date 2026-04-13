@@ -11,7 +11,6 @@ import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.tasks.await
 import com.securecam.data.repository.EventRepository
 import com.securecam.data.repository.SecurityEvent
-import com.securecam.data.repository.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlin.coroutines.resume
@@ -22,8 +21,7 @@ import javax.inject.Singleton
 @Singleton
 class HybridAIPipeline @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val eventRepository: EventRepository,
-    private val settingsRepository: SettingsRepository
+    private val eventRepository: EventRepository
 ) {
     private val aiDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private val aiScope = CoroutineScope(aiDispatcher + SupervisorJob())
@@ -31,31 +29,13 @@ class HybridAIPipeline @Inject constructor(
     private val llmAnalyzer = LlmVisionAnalyzer(context)
     private val biometricEngine = BiometricEngine(context)
     
+    // CRITICAL BUG 4 FIX: Instantiate expensive FaceDetector once, not per frame
+    private val faceDetectorOptions = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
+    private val faceDetector = FaceDetection.getClient(faceDetectorOptions)
+    
     private var isLlmBusy = false
     private var isLlmInitialized = false
-    private var isLlmEnabledSetting = true
-    private var isFaceRecogEnabledSetting = false
-    
     private var firstFrameReceived = false
-
-    init { 
-        aiScope.launch { 
-            try { settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it } } catch (e: Exception) {}
-        } 
-        aiScope.launch { 
-            try {
-                settingsRepository.isFaceRecogEnabled.collect { enabled ->
-                    isFaceRecogEnabledSetting = enabled
-                    try {
-                        if (enabled) biometricEngine.initialize() else biometricEngine.close()
-                    } catch (e: Exception) {
-                        eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Init Error: ${e.message}", 1.0f))
-                        isFaceRecogEnabledSetting = false
-                    }
-                }
-            } catch (e: Exception) {}
-        }
-    }
 
     fun start() {
         firstFrameReceived = false
@@ -63,6 +43,13 @@ class HybridAIPipeline @Inject constructor(
             isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) 
             aiScope.launch {
                 if (isLlmInitialized) eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Engine Initialized & Online.", 1.0f))
+            }
+        }
+        aiScope.launch {
+            try {
+                biometricEngine.initialize()
+            } catch (e: Exception) {
+                eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Init Error: ${e.message}", 1.0f))
             }
         }
     }
@@ -83,17 +70,19 @@ class HybridAIPipeline @Inject constructor(
                     eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Camera heartbeat established. AI is receiving live frames.", 1.0f))
                 }
 
+                // CRITICAL BUG 3 FIX: Decoupled entirely from DataStore. Unified state by reading directly from SharedPreferences.
+                val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                val isFaceRecogEnabledSetting = prefs.getBoolean("face_recog_enabled", false)
+                val isLlmEnabledSetting = prefs.getBoolean("llm_enabled", true)
+
                 var skipLlm = false
                 
                 if (isFaceRecogEnabledSetting) {
                     try {
                         val inputImage = InputImage.fromBitmap(bitmap, 0)
-                        val options = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
-                        val detector = FaceDetection.getClient(options)
-                        val facesList = detector.process(inputImage).await()
+                        val facesList = faceDetector.process(inputImage).await()
 
                         if (facesList.isNotEmpty()) {
-                            val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                             val savedFacesJson = prefs.getString("authorized_faces", "[]") ?: "[]"
                             val type = object : TypeToken<List<RegisteredFace>>() {}.type
                             val savedFaces: List<RegisteredFace> = Gson().fromJson(savedFacesJson, type) ?: emptyList()
@@ -101,7 +90,6 @@ class HybridAIPipeline @Inject constructor(
                             val recognizedNames = mutableSetOf<String>()
 
                             if (savedFaces.isNotEmpty()) {
-                                // CRITICAL FIX: Crowd Recognition - Loop through ALL detected faces in the image
                                 for (mlFace in facesList) {
                                     val bounds = mlFace.boundingBox
                                     val size = maxOf(bounds.width(), bounds.height())
@@ -121,7 +109,7 @@ class HybridAIPipeline @Inject constructor(
                                             val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, face.vector)
                                             if (similarity > 0.65f) {
                                                 recognizedNames.add(face.name)
-                                                break // Stop checking this specific face against the vault once it matches
+                                                break 
                                             }
                                         }
                                     }
@@ -162,7 +150,7 @@ class HybridAIPipeline @Inject constructor(
         val debugMode = prefs.getBoolean("debug_mode", false)
         
         val basePrompt = prefs.getString("prompt_sys", "You are an AI security camera. Answer the user's prompt based ONLY on the image provided.") ?: ""
-        val usrPrompt = prefs.getString("prompt_usr", "Report if you see any clock") ?: ""
+        val usrPrompt = prefs.getString("prompt_usr", "Report if you see any clock.") ?: ""
         
         val enforcedPrompt = "$basePrompt\n\nCRITICAL RULE: Evaluate the image based ONLY on the user's specific trigger. If the requested object/event IS present in the image, reply 'ALERT: <brief description>'. If the requested object/event is NOT present, you must reply EXACTLY with the word 'CLEAR'. Do not explain yourself."
 
@@ -187,7 +175,10 @@ class HybridAIPipeline @Inject constructor(
                             if (continuation.isActive) continuation.resume(true)
                         },
                         onError = { err -> 
-                            aiScope.launch { eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Error: $err", 1.0f)) }
+                            // CRITICAL BUG 5 FIX: Suppress the persistent "busy" error log so it doesn't flood the UI
+                            if (!err.contains("busy", ignoreCase = true)) {
+                                aiScope.launch { eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Error: $err", 1.0f)) }
+                            }
                             if (continuation.isActive) continuation.resume(false) 
                         }
                     )
