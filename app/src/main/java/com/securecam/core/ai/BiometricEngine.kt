@@ -28,7 +28,6 @@ class BiometricEngine(private val context: Context) {
         }
 
         if (!modelFile.exists()) {
-            // CRITICAL FIX: 3-URL Fallback prevents 404 crashes
             val mirrors = listOf(
                 "https://raw.githubusercontent.com/MCarlomagno/FaceRecognitionAuth/master/assets/mobilefacenet.tflite",
                 "https://raw.githubusercontent.com/Rajatkhandouja/Face-Recognition-Android/master/app/src/main/assets/mobile_face_net.tflite",
@@ -69,7 +68,6 @@ class BiometricEngine(private val context: Context) {
     }
 
     suspend fun getFaceEmbedding(bitmap: Bitmap): FloatArray? = withContext(Dispatchers.Default) {
-        // CRITICAL FIX: Simply return null instead of throwing an exception. This completely stops the UI Spam.
         if (interpreter == null) return@withContext null
         
         val swBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true) ?: bitmap
