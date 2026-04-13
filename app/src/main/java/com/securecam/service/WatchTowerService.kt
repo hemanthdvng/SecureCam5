@@ -26,10 +26,14 @@ class WatchTowerService : LifecycleService() {
         super.onCreate()
         createNotificationChannel()
         
-        // CRITICAL FIX: Android 14+ Strict Foreground Service Enforcement
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, createNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
-        } else {
+        // CRITICAL FIX: Graceful fallback for API levels that don't support CAMERA foreground type
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                startForeground(NOTIFICATION_ID, createNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+            } else {
+                startForeground(NOTIFICATION_ID, createNotification())
+            }
+        } catch (e: Exception) {
             startForeground(NOTIFICATION_ID, createNotification())
         }
     }
