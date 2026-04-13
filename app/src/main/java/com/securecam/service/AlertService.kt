@@ -27,7 +27,6 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class AlertService : LifecycleService() {
     @Inject lateinit var eventRepository: EventRepository
-    private val initTime = System.currentTimeMillis()
 
     override fun onCreate() {
         super.onCreate()
@@ -43,7 +42,6 @@ class AlertService : LifecycleService() {
 
     private fun initFirebaseAndListen() {
         try {
-            // CRASH FIX: The service must manually load the Firebase keys if the UI is dead!
             val prefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
             val dbUrl = prefs.getString("fb_db_url", "") ?: ""
             val apiKey = prefs.getString("fb_api_key", "") ?: ""
@@ -60,16 +58,30 @@ class AlertService : LifecycleService() {
                 }
 
                 val db = FirebaseDatabase.getInstance()
-                db.getReference("securecam/alerts").addChildEventListener(object : ChildEventListener {
+                
+                // CRITICAL FIX: limitToLast(1) stops history crash. 
+                val query = db.getReference("securecam/alerts").orderByChild("timestamp").limitToLast(1)
+
+                query.addChildEventListener(object : ChildEventListener {
                     override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
                         val timestamp = snapshot.child("timestamp").getValue(Long::class.java) ?: 0L
                         val text = snapshot.child("text").getValue(String::class.java) ?: "Unknown Alert"
                         
-                        if (timestamp > initTime - 5000) {
+                        val currentPrefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                        val lastProcessed = currentPrefs.getLong("last_processed_alert", 0L)
+                        val popupEnabled = currentPrefs.getBoolean("enable_notifications", true)
+
+                        // CRITICAL FIX: Only trigger if the timestamp strictly moves forward
+                        if (timestamp > lastProcessed) {
+                            currentPrefs.edit().putLong("last_processed_alert", timestamp).apply()
+
                             CoroutineScope(Dispatchers.IO).launch {
                                 eventRepository.emitEvent(SecurityEvent("REMOTE_ALERT", text, 1.0f))
                             }
-                            showHeadsUpNotification(text)
+                            
+                            if (popupEnabled) {
+                                showHeadsUpNotification(text)
+                            }
                         }
                     }
                     override fun onChildChanged(s: DataSnapshot, p: String?) {}
@@ -77,8 +89,6 @@ class AlertService : LifecycleService() {
                     override fun onChildMoved(s: DataSnapshot, p: String?) {}
                     override fun onCancelled(e: DatabaseError) {}
                 })
-            } else {
-                Log.e("AlertService", "Firebase credentials missing in SharedPreferences")
             }
         } catch (e: Exception) {
             Log.e("AlertService", "Failed to bind Firebase Listener", e)
@@ -87,13 +97,14 @@ class AlertService : LifecycleService() {
 
     private fun showHeadsUpNotification(text: String) {
         val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val builder = NotificationCompat.Builder(this, "securecam_alerts")
+        val builder = NotificationCompat.Builder(this, "securecam_alerts_v2")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("🚨 Security Alert")
+            .setContentTitle("🚨 SecureCam Threat Detected")
             .setContentText(text)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX) // Forced to Max
+            .setCategory(NotificationCompat.CATEGORY_ALARM) // Treated as an Alarm by Android
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
@@ -105,16 +116,20 @@ class AlertService : LifecycleService() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(NotificationManager::class.java)
+            
             val serviceChannel = NotificationChannel("securecam_bg", "Background Service", NotificationManager.IMPORTANCE_LOW)
             manager.createNotificationChannel(serviceChannel)
-            val alertChannel = NotificationChannel("securecam_alerts", "Security Alerts", NotificationManager.IMPORTANCE_HIGH)
+
+            // Generate a fresh channel ID so Android doesn't cache old, broken priority states
+            val alertChannel = NotificationChannel("securecam_alerts_v2", "High Priority Security Alerts", NotificationManager.IMPORTANCE_HIGH)
+            alertChannel.description = "Popup alerts for AI threat detection"
             manager.createNotificationChannel(alertChannel)
         }
     }
 
     private fun createForegroundNotification(): android.app.Notification {
         return NotificationCompat.Builder(this, "securecam_bg")
-            .setContentTitle("SecureCam Viewer")
+            .setContentTitle("SecureCam is Armed")
             .setContentText("Listening for offline security alerts...")
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .build()
