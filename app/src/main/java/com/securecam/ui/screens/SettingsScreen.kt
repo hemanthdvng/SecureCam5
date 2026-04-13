@@ -230,7 +230,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
         )
     }
     
-    // Default to Local WiFi if null
     var viewerMode by remember { mutableStateOf(prefs.getString("viewer_mode", "Local WiFi") ?: "Local WiFi") }
     var menuExpanded by remember { mutableStateOf(false) }
     
@@ -295,7 +294,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Text("Connection & Networking", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Dropdown Menu for Connection Mode
             ExposedDropdownMenuBox(
                 expanded = menuExpanded,
                 onExpandedChange = { menuExpanded = !menuExpanded }
@@ -336,7 +334,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             )
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Conditionally show networking settings
             if (viewerMode == "Local WiFi") {
                 Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 Spacer(modifier = Modifier.height(8.dp))
@@ -388,6 +385,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
+
             Text("Device Alerts & Settings", style = MaterialTheme.typography.titleMedium)
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) { Text("Popup Notifications", style = MaterialTheme.typography.bodyLarge) }
