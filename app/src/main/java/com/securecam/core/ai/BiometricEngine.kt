@@ -20,12 +20,12 @@ class BiometricEngine(private val context: Context) {
     private val IMAGE_SIZE = 112
     private val EMBEDDING_SIZE = 192
     
-    private val MODEL_URL = "https://raw.githubusercontent.com/shubham0204/Face_Recognition_with_FaceNet_Android/master/app/src/main/assets/mobile_face_net.tflite"
+    // CRITICAL FIX: Re-routed from dead URL (404) to a stable, actively maintained 192-dimension MobileFaceNet model
+    private val MODEL_URL = "https://raw.githubusercontent.com/MCarlomagno/FaceRecognitionAuth/master/assets/mobilefacenet.tflite"
 
     suspend fun initialize() = withContext(Dispatchers.IO) {
         val modelFile = File(context.filesDir, "mobilefacenet.tflite")
         
-        // FIX 1: Detect and delete corrupted/empty model files from interrupted downloads
         if (modelFile.exists() && modelFile.length() < 1000000) {
             Log.w("BiometricEngine", "Corrupted model detected (${modelFile.length()} bytes). Deleting for fresh download...")
             modelFile.delete()
@@ -63,7 +63,6 @@ class BiometricEngine(private val context: Context) {
     suspend fun getFaceEmbedding(bitmap: Bitmap): FloatArray? = withContext(Dispatchers.Default) {
         if (interpreter == null) throw IllegalStateException("AI Interpreter is null. Initialization failed.")
         
-        // FIX 2: Force software rendering. Hardware Bitmaps (Android 9+) will crash when getPixels() is called.
         val swBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true) ?: bitmap
         val scaledBitmap = Bitmap.createScaledBitmap(swBitmap, IMAGE_SIZE, IMAGE_SIZE, false)
         
