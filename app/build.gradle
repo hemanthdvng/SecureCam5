@@ -79,3 +79,9 @@ dependencies {
     implementation 'com.google.mlkit:face-detection:16.1.6'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3'
 }
+
+dependencies {
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("androidx.media3:media3-exoplayer:1.2.0")
+    implementation("androidx.media3:media3-ui:1.2.0")
+}
