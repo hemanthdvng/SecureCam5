@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
@@ -24,8 +25,13 @@ class WatchTowerService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        // ARCHITECTURE FIX: Lock the process into Foreground state to prevent the OS from killing the AI/WebRTC threads when minimized
-        startForeground(NOTIFICATION_ID, createNotification())
+        
+        // CRITICAL FIX: Android 14+ Strict Foreground Service Enforcement
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, createNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification())
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
