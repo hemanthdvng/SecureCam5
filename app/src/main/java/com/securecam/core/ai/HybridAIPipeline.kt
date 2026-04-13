@@ -37,7 +37,7 @@ class HybridAIPipeline @Inject constructor(
 
     fun start() {
         llmAnalyzer.initialize { result -> isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) }
-        biometricEngine.initialize()
+        aiScope.launch { biometricEngine.initialize() }
     }
 
     fun stop() {
@@ -55,7 +55,6 @@ class HybridAIPipeline @Inject constructor(
                     return@launch
                 }
                 
-                // BIOMETRIC INTERCEPT: Check for authorized faces before hitting the LLM
                 val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                 val savedEmbeddingStr = prefs.getString("authorized_face_vector", "") ?: ""
                 var isFaceAuthorized = false
@@ -67,9 +66,6 @@ class HybridAIPipeline @Inject constructor(
                         val savedFaceVector: FloatArray = Gson().fromJson(savedEmbeddingStr, type)
                         
                         val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, savedFaceVector)
-                        Log.d("HybridAIPipeline", "Biometric Similarity Score: $similarity")
-                        
-                        // 0.65 threshold is standard for MobileFaceNet Cosine Similarity
                         if (similarity > 0.65f) {
                             isFaceAuthorized = true
                         }
@@ -82,7 +78,6 @@ class HybridAIPipeline @Inject constructor(
                     return@launch
                 }
                 
-                // If no authorized face is found, pass to LLM for threat detection
                 triggerLlmAnalysis(bitmap)
             } catch (e: Throwable) { bitmap.recycle() }
         }
