@@ -100,7 +100,6 @@ class HybridAIPipeline @Inject constructor(
                             }
                         }
                     } catch (e: Exception) {
-                        // CRITICAL FIX: If Face Recog crashes, it prints to the UI instead of silently killing the LLM
                         eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Engine Error: ${e.message}", 1.0f))
                     }
                 }
@@ -196,6 +195,7 @@ class HybridAIPipeline @Inject constructor(
                             if (continuation.isActive) continuation.resume(true)
                         },
                         onError = { err -> 
+                            // CRITICAL FIX: Prevent silent failures by logging the exact error to the UI
                             aiScope.launch { eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Inference Error: $err", 1.0f)) }
                             if (continuation.isActive) continuation.resume(false) 
                         }
