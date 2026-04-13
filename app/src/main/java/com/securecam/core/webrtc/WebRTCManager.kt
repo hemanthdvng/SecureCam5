@@ -73,13 +73,22 @@ class WebRTCManager(private val context: Context) {
         return videoTrack
     }
 
-    // New: Bi-Directional Audio Support
+    fun createPeerConnection(observer: PeerConnection.Observer): PeerConnection? {
+        val iceServers = listOf(
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+        )
+        val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
+        rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        
+        return peerConnectionFactory?.createPeerConnection(rtcConfig, observer)
+    }
+
     fun createLocalAudioTrack(): AudioTrack? {
         val audioSource = peerConnectionFactory?.createAudioSource(MediaConstraints())
         return peerConnectionFactory?.createAudioTrack("audio_track", audioSource)
     }
 
-    // New: Flip Camera Lens
     fun switchCamera() {
         videoCapturer?.switchCamera(null)
     }
