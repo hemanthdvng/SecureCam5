@@ -55,7 +55,6 @@ class CameraViewModel @Inject constructor(
     val eventRepository: EventRepository
 ) : ViewModel()
 
-// FIX 3: Rip out WifiManager entirely and use standard Java Networking to prevent SecurityException crashes
 fun getLocalIpAddress(): String {
     try {
         val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
@@ -110,6 +109,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val scanIntervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
         val securityToken = remember { prefs.getString("security_token", "") ?: "" }
+        val localServer = remember { LocalSignalingServer(8081, securityToken) }
 
         DisposableEffect(Unit) {
             tts = TextToSpeech(context) { status ->
@@ -162,6 +162,9 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 alertHistory.add(0, "[$timeStr] $text")
                 if (alertHistory.size > 50) alertHistory.removeLast()
                 
+                // TCP Broadcast fixes the dropped UDP packets and wakes up the background AlertService!
+                localServer.broadcast(Gson().toJson(mapOf("type" to "ALERT", "text" to text)))
+                
                 dataChannel?.let { dc ->
                     if (dc.state() == DataChannel.State.OPEN) {
                         val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8))
@@ -176,7 +179,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             mjpegServer.start(8080, securityToken)
             
             val rtcManager = WebRTCManager(context).apply { initRenderer(localRenderer) }
-            val localServer = LocalSignalingServer(8081, securityToken)
             
             val fbUrl = prefs.getString("fb_db_url", "") ?: ""
             var firebaseClient: FirebaseSignalingClient? = null
@@ -195,7 +197,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 override fun onIceCandidate(candidate: IceCandidate?) {
                     candidate?.let {
                         val json = Gson().toJson(mapOf("type" to "ICE", "sdpMid" to it.sdpMid, "sdpMLineIndex" to it.sdpMLineIndex, "sdp" to it.sdp))
-                        if (activeSignaler == "LOCAL") localServer.send(json)
+                        if (activeSignaler == "LOCAL") localServer.broadcast(json)
                         else if (activeSignaler == "FIREBASE") firebaseClient?.sendSignal("ICE", Gson().toJson(IceCandidateData(it.sdpMid, it.sdpMLineIndex, it.sdp)))
                     }
                 }
@@ -243,7 +245,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     override fun onCreateSuccess(sdp: SessionDescription?) {
                         sdp?.let {
                             peerConnection.setLocalDescription(SimpleSdpObserver(), it)
-                            if (signalerType == "LOCAL") localServer.send(Gson().toJson(mapOf("type" to "OFFER", "typeSDP" to it.type.canonicalForm(), "sdp" to it.description)))
+                            if (signalerType == "LOCAL") localServer.broadcast(Gson().toJson(mapOf("type" to "OFFER", "typeSDP" to it.type.canonicalForm(), "sdp" to it.description)))
                             else firebaseClient?.sendSignal("OFFER", Gson().toJson(SdpData(it.type.canonicalForm(), it.description)))
                         }
                     }
