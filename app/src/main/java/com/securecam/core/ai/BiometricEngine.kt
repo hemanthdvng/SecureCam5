@@ -7,8 +7,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.Interpreter
 import java.io.File
+import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.channels.FileChannel
 import kotlin.math.sqrt
 
 class BiometricEngine(private val context: Context) {
@@ -22,28 +24,33 @@ class BiometricEngine(private val context: Context) {
         try {
             val modelFile = File(context.filesDir, "mobilefacenet.tflite")
             
-            // AUTO-DOWNLOADER: Fetch model from open-source repo if missing
             if (!modelFile.exists()) {
-                Log.d("BiometricEngine", "Model missing. Downloading MobileFaceNet...")
+                Log.d("BiometricEngine", "Downloading MobileFaceNet...")
                 val url = java.net.URL(MODEL_URL)
                 url.openStream().use { input ->
                     modelFile.outputStream().use { output ->
                         input.copyTo(output)
                     }
                 }
-                Log.d("BiometricEngine", "Download complete!")
             }
 
+            val fileInputStream = FileInputStream(modelFile)
+            val fileChannel = fileInputStream.channel
+            val modelBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, modelFile.length())
+
             val options = Interpreter.Options().apply { numThreads = 4 }
-            interpreter = Interpreter(modelFile, options)
+            interpreter = Interpreter(modelBuffer, options)
             Log.d("BiometricEngine", "MobileFaceNet initialized successfully.")
         } catch (e: Exception) {
-            Log.e("BiometricEngine", "Failed to load mobilefacenet.tflite.", e)
+            Log.e("BiometricEngine", "Failed to initialize BiometricEngine", e)
         }
     }
 
     suspend fun getFaceEmbedding(bitmap: Bitmap): FloatArray? = withContext(Dispatchers.Default) {
-        if (interpreter == null) return@withContext null
+        if (interpreter == null) {
+            Log.e("BiometricEngine", "Interpreter is null. Extraction aborted.")
+            return@withContext null
+        }
         
         try {
             val scaledBitmap = Bitmap.createScaledBitmap(bitmap, IMAGE_SIZE, IMAGE_SIZE, false)
