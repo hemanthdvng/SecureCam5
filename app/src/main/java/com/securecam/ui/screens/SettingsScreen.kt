@@ -41,14 +41,11 @@ import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.tasks.await
 import com.securecam.core.ai.BiometricEngine
-import com.securecam.core.ai.HybridAIPipeline
 import com.securecam.core.ai.RegisteredFace
-import com.securecam.data.repository.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -59,12 +56,7 @@ import java.util.UUID
 import javax.inject.Inject
 
 @HiltViewModel
-class SettingsViewModel @Inject constructor(
-    private val repository: SettingsRepository,
-    private val aiPipeline: HybridAIPipeline
-) : ViewModel() {
-    val isLlmEnabled = repository.isLlmEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
-    val isFaceRecogEnabled = repository.isFaceRecogEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
+class SettingsViewModel @Inject constructor() : ViewModel() {
     
     var isImporting by mutableStateOf(false)
         private set
@@ -77,7 +69,7 @@ class SettingsViewModel @Inject constructor(
     var draftFaceName by mutableStateOf("")
 
     private val _registeredFaces = MutableStateFlow<List<RegisteredFace>>(emptyList())
-    val registeredFaces = _registeredFaces
+    val registeredFaces = _registeredFaces.asStateFlow()
 
     fun loadPrefs(context: Context) {
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -92,9 +84,6 @@ class SettingsViewModel @Inject constructor(
             _registeredFaces.value = emptyList()
         }
     }
-
-    fun toggleLlm(enabled: Boolean) { viewModelScope.launch { repository.setLlmEnabled(enabled) } }
-    fun toggleFaceRecog(enabled: Boolean) { viewModelScope.launch { repository.setFaceRecogEnabled(enabled) } }
 
     fun removeFace(context: Context, id: String) {
         val updated = _registeredFaces.value.filter { it.id != id }
@@ -122,7 +111,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // CRITICAL FIX: Direct HuggingFace Model Downloader
     fun downloadCloudModel(context: Context) {
         isDownloading = true
         viewModelScope.launch(Dispatchers.IO) {
@@ -251,8 +239,6 @@ class SettingsViewModel @Inject constructor(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = hiltViewModel()) {
-    val llmEnabled by viewModel.isLlmEnabled.collectAsState()
-    val faceRecogEnabled by viewModel.isFaceRecogEnabled.collectAsState()
     val faces by viewModel.registeredFaces.collectAsState()
     
     val context = LocalContext.current
@@ -267,11 +253,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var appRole by remember { mutableStateOf(prefs.getString("app_role", "Camera") ?: "Camera") }
     var roleExpanded by remember { mutableStateOf(false) }
     
-    // CRITICAL FIX: Restore missing state variables to fix Compiler Error
     var targetIp by remember { mutableStateOf(prefs.getString("target_ip", "") ?: "") }
-    var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
-    var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
-    var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
+    
+    // CRITICAL BUG 3 FIX: Settings now bind perfectly to SharedPreferences
+    var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
+    var faceRecogEnabled by remember { mutableStateOf(prefs.getBoolean("face_recog_enabled", false)) }
     
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.60f).coerceIn(0.0f, 1.0f)) }
@@ -362,18 +348,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Auth Token") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
-            if (viewerMode == "Local WiFi") {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world. This keeps your stream direct and private without needing third-party cloud servers.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            } else if (viewerMode == "Firebase") {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Firebase routing requires your active Google Cloud credentials to relay streams globally.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth())
-            }
-            
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
@@ -404,11 +378,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) { Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge) }
-                Switch(checked = llmEnabled, onCheckedChange = { viewModel.toggleLlm(it) })
+                Switch(checked = llmEnabled, onCheckedChange = { llmEnabled = it; prefs.edit().putBoolean("llm_enabled", it).apply() })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) { Text("Enable Face Recognition", style = MaterialTheme.typography.bodyLarge) }
-                Switch(checked = faceRecogEnabled, onCheckedChange = { viewModel.toggleFaceRecog(it) })
+                Switch(checked = faceRecogEnabled, onCheckedChange = { faceRecogEnabled = it; prefs.edit().putBoolean("face_recog_enabled", it).apply() })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) { Text("Verbose Debug Mode", style = MaterialTheme.typography.bodyLarge) }
@@ -430,7 +404,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
             
-            // CRITICAL FIX: Restored LLM Upload and Added HuggingFace Downloader
             Text("Local LLM Model", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Current model loaded: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -438,7 +411,8 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Button(
                 onClick = { filePicker.launch(arrayOf("*/*")) }, 
                 modifier = Modifier.fillMaxWidth(), 
-                enabled = !viewModel.isImporting && !viewModel.isDownloading
+                enabled = !viewModel.isImporting && !viewModel.isDownloading,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) { 
                 Text(if (viewModel.isImporting) "Loading Local Model..." else "📁 Import Model from Device (.litertlm)") 
             }
