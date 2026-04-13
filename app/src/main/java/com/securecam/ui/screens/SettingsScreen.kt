@@ -47,11 +47,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.PrintWriter
+import java.net.Socket
 import kotlin.math.roundToInt
 import java.util.UUID
 import javax.inject.Inject
@@ -62,7 +63,7 @@ class SettingsViewModel @Inject constructor(
     private val aiPipeline: HybridAIPipeline
 ) : ViewModel() {
     val isLlmEnabled = repository.isLlmEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
-    val isFaceRecogEnabled = repository.isFaceRecogEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
+    val isFaceRecogEnabled = repository.isFaceRecogEnabled.stateIn(viewModelScope, SharingStarted.Lazily, false)
     
     var isImporting by mutableStateOf(false)
         private set
@@ -73,7 +74,7 @@ class SettingsViewModel @Inject constructor(
     var draftFaceName by mutableStateOf("")
 
     private val _registeredFaces = MutableStateFlow<List<RegisteredFace>>(emptyList())
-    val registeredFaces = _registeredFaces.asStateFlow()
+    val registeredFaces = _registeredFaces
 
     fun loadPrefs(context: Context) {
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -99,38 +100,42 @@ class SettingsViewModel @Inject constructor(
         prefs.edit().putString("authorized_faces", Gson().toJson(updated)).apply()
     }
 
-    fun importModel(uri: Uri, context: Context) {
-        isImporting = true
+    fun syncToCamera(context: Context, ip: String, token: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                var fileName = "custom_model.litertlm"
-                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    if (cursor.moveToFirst()) fileName = cursor.getString(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME) ?: 0)
-                }
-                val destFile = File(context.filesDir, fileName)
-                context.contentResolver.openInputStream(uri)?.use { input -> destFile.outputStream().use { output -> input.copyTo(output) } }
-                context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
-                currentModelName = fileName
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Model $fileName Loaded!", Toast.LENGTH_LONG).show() }
+                val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                val socket = Socket(ip, 8081)
+                val out = PrintWriter(socket.getOutputStream(), true)
+                out.println(token)
+                
+                val syncData = mapOf(
+                    "type" to "SYNC_SETTINGS",
+                    "scan_interval_sec" to prefs.getFloat("scan_interval_sec", 5f).toDouble(),
+                    "confidence_threshold" to prefs.getFloat("confidence_threshold", 0.60f).toDouble(),
+                    "prompt_sys" to prefs.getString("prompt_sys", ""),
+                    "prompt_usr" to prefs.getString("prompt_usr", ""),
+                    "llm_enabled" to prefs.getBoolean("llm_enabled", true),
+                    "face_recog_enabled" to prefs.getBoolean("face_recog_enabled", false)
+                )
+                out.println(Gson().toJson(syncData))
+                socket.close()
+                withContext(Dispatchers.Main) { onSuccess() }
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Import Failed: ${e.message}", Toast.LENGTH_LONG).show() }
-            } finally { isImporting = false }
+                withContext(Dispatchers.Main) { onError(e.message ?: "Connection Refused") }
+            }
         }
     }
 
     fun processFaceRegistration(uri: Uri, context: Context) {
         viewModelScope.launch(Dispatchers.IO) {
             withContext(Dispatchers.Main) { Toast.makeText(context, "Scanning for face...", Toast.LENGTH_SHORT).show() }
-            
             try {
                 var bmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ ->
                         decoder.isMutableRequired = true
                         decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                     }
-                } else {
-                    MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
-                }
+                } else { MediaStore.Images.Media.getBitmap(context.contentResolver, uri) }
 
                 if (bmp.width > 1500 || bmp.height > 1500) {
                     val scale = 1500f / maxOf(bmp.width, bmp.height)
@@ -151,21 +156,17 @@ class SettingsViewModel @Inject constructor(
                 val size = maxOf(bounds.width(), bounds.height())
                 var left = bounds.centerX() - size / 2
                 var top = bounds.centerY() - size / 2
-                
                 left = left.coerceAtLeast(0)
                 top = top.coerceAtLeast(0)
                 val w = minOf(size, bmp.width - left)
                 val h = minOf(size, bmp.height - top)
-
                 val croppedBmp = Bitmap.createBitmap(bmp, left, top, w, h)
 
                 withContext(Dispatchers.Main) {
                     draftCroppedBitmap = croppedBmp
-                    draftFaceName = "Face ${registeredFaces.value.size + 1}"
+                    draftFaceName = "Face ${_registeredFaces.value.size + 1}"
                 }
-            } catch(e: Exception) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show() }
-            }
+            } catch(e: Exception) {}
         }
     }
 
@@ -181,34 +182,16 @@ class SettingsViewModel @Inject constructor(
 
                 if (embedding != null) {
                     val newFace = RegisteredFace(UUID.randomUUID().toString(), draftFaceName, embedding)
-                    val updatedList = registeredFaces.value + newFace
-                    
+                    val updatedList = _registeredFaces.value + newFace
                     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                     prefs.edit().putString("authorized_faces", Gson().toJson(updatedList)).apply()
                     _registeredFaces.value = updatedList
-                    
-                    withContext(Dispatchers.Main) { 
-                        Toast.makeText(context, "Face added successfully!", Toast.LENGTH_SHORT).show() 
-                        draftCroppedBitmap = null
-                    }
-                } else {
-                    withContext(Dispatchers.Main) { 
-                        Toast.makeText(context, "Could not extract features.", Toast.LENGTH_SHORT).show() 
-                        draftCroppedBitmap = null
-                    }
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Face added!", Toast.LENGTH_SHORT).show(); draftCroppedBitmap = null }
                 }
-            } catch(e: Exception) {
-                withContext(Dispatchers.Main) { 
-                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show() 
-                    draftCroppedBitmap = null
-                }
-            }
+            } catch(e: Exception) {}
         }
     }
-
-    fun cancelFaceRegistration() {
-        draftCroppedBitmap = null
-    }
+    fun cancelFaceRegistration() { draftCroppedBitmap = null }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -222,38 +205,25 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     val clipboardManager = LocalClipboardManager.current
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     
-    var securityToken by remember { 
-        mutableStateOf(
-            prefs.getString("security_token", "").takeIf { !it.isNullOrBlank() } ?: UUID.randomUUID().toString().substring(0, 8).also {
-                prefs.edit().putString("security_token", it).apply()
-            }
-        )
-    }
+    var securityToken by remember { mutableStateOf(prefs.getString("security_token", "").takeIf { !it.isNullOrBlank() } ?: UUID.randomUUID().toString().substring(0, 8).also { prefs.edit().putString("security_token", it).apply() }) }
     
     var viewerMode by remember { mutableStateOf(prefs.getString("viewer_mode", "Local WiFi") ?: "Local WiFi") }
     var menuExpanded by remember { mutableStateOf(false) }
     
+    var appRole by remember { mutableStateOf(prefs.getString("app_role", "Camera") ?: "Camera") }
+    var roleExpanded by remember { mutableStateOf(false) }
+    
     var targetIp by remember { mutableStateOf(prefs.getString("target_ip", "") ?: "") }
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
-    var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f).coerceIn(0.0f, 1.0f)) }
-    var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", true)) }
+    var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.60f).coerceIn(0.0f, 1.0f)) }
+    var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", false)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
-    var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
-    var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
-    var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
-    var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
     
-    var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a visual analysis AI. Follow the user's trigger instructions exactly.") ?: "") }
-    var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Report if you see any people or a TV turned on.") ?: "") }
+    var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are an AI security camera. Answer the user's prompt based ONLY on the image provided.") ?: "") }
+    var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Report if you see any clock.") ?: "") }
 
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> 
-        uri?.let { viewModel.processFaceRegistration(it, context) }
-    }
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { viewModel.processFaceRegistration(it, context) } }
 
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> 
-        uri?.let { viewModel.importModel(it, context) } 
-    }
-    
     LaunchedEffect(Unit) { viewModel.loadPrefs(context) }
 
     if (viewModel.draftCroppedBitmap != null) {
@@ -262,27 +232,13 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             title = { Text("Confirm & Name Face") },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                    Image(
-                        bitmap = viewModel.draftCroppedBitmap!!.asImageBitmap(),
-                        contentDescription = "Cropped Face",
-                        modifier = Modifier.size(150.dp).clip(CircleShape)
-                    )
+                    Image(bitmap = viewModel.draftCroppedBitmap!!.asImageBitmap(), contentDescription = "Cropped Face", modifier = Modifier.size(150.dp).clip(CircleShape))
                     Spacer(modifier = Modifier.height(16.dp))
-                    OutlinedTextField(
-                        value = viewModel.draftFaceName,
-                        onValueChange = { viewModel.draftFaceName = it },
-                        label = { Text("Person's Name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    OutlinedTextField(value = viewModel.draftFaceName, onValueChange = { viewModel.draftFaceName = it }, label = { Text("Person's Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 }
             },
-            confirmButton = {
-                Button(onClick = { viewModel.confirmFaceRegistration(context) }) { Text("Save Face") }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.cancelFaceRegistration() }) { Text("Cancel") }
-            }
+            confirmButton = { Button(onClick = { viewModel.confirmFaceRegistration(context) }) { Text("Save Face") } },
+            dismissButton = { TextButton(onClick = { viewModel.cancelFaceRegistration() }) { Text("Cancel") } }
         )
     }
 
@@ -291,65 +247,60 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     ) { padding ->
         Column(modifier = Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState())) {
             
-            Text("Connection & Networking", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Text("Device Role", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-
-            ExposedDropdownMenuBox(
-                expanded = menuExpanded,
-                onExpandedChange = { menuExpanded = !menuExpanded }
-            ) {
+            ExposedDropdownMenuBox(expanded = roleExpanded, onExpandedChange = { roleExpanded = !roleExpanded }) {
                 OutlinedTextField(
-                    value = viewerMode,
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Routing Protocol") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded) },
-                    modifier = Modifier.menuAnchor().fillMaxWidth(),
-                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                    value = appRole, onValueChange = {}, readOnly = true, label = { Text("Use this device as:") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = roleExpanded) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
                 )
-                ExposedDropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false }
-                ) {
-                    listOf("Local WiFi", "Firebase").forEach { mode ->
-                        DropdownMenuItem(
-                            text = { Text(mode) },
-                            onClick = {
-                                viewerMode = mode
-                                prefs.edit().putString("viewer_mode", mode).apply()
-                                menuExpanded = false
-                            }
-                        )
+                ExposedDropdownMenu(expanded = roleExpanded, onDismissRequest = { roleExpanded = false }) {
+                    listOf("Camera", "Viewer").forEach { mode ->
+                        DropdownMenuItem(text = { Text(mode) }, onClick = { appRole = mode; prefs.edit().putString("app_role", mode).apply(); roleExpanded = false })
                     }
                 }
             }
             
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = securityToken, 
-                onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, 
-                label = { Text("Master Auth Token (Must match in Viewer App)") }, 
-                trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, 
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-
-            if (viewerMode == "Local WiFi") {
-                Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = targetIp, 
-                    onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, 
-                    label = { Text("Camera IP Address (e.g. 192.168.1.5 or Tailscale IP)") }, 
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else if (viewerMode == "Firebase") {
-                Text("Firebase routing requires your active Google Cloud credentials to relay streams globally.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth())
+            if (appRole == "Viewer") {
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = { 
+                        viewModel.syncToCamera(context, targetIp, securityToken, 
+                            onSuccess = { Toast.makeText(context, "Settings Synced!", Toast.LENGTH_SHORT).show() },
+                            onError = { Toast.makeText(context, "Sync Failed: $it", Toast.LENGTH_LONG).show() }
+                        ) 
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009688)),
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                ) {
+                    Text("📡 PUSH SETTINGS TO CAMERA", fontWeight = FontWeight.Bold)
+                }
+                Text("Make sure the Camera device is running before pushing settings.", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(top = 4.dp))
             }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text("Connection & Networking", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(8.dp))
+            ExposedDropdownMenuBox(expanded = menuExpanded, onExpandedChange = { menuExpanded = !menuExpanded }) {
+                OutlinedTextField(
+                    value = viewerMode, onValueChange = {}, readOnly = true, label = { Text("Routing Protocol") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                )
+                ExposedDropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    listOf("Local WiFi", "Firebase").forEach { mode ->
+                        DropdownMenuItem(text = { Text(mode) }, onClick = { viewerMode = mode; prefs.edit().putString("viewer_mode", mode).apply(); menuExpanded = false })
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = targetIp, onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, label = { Text("Camera IP Address (Required for WiFi)") }, modifier = Modifier.fillMaxWidth())
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Auth Token") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
@@ -357,27 +308,15 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Upload any photo containing your face. The AI will automatically detect the face, crop it, and store its vector offline.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Upload a photo. The AI will auto-crop the face. Faces are NOT synced remotely, they must be added directly to the Camera device.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
-            
-            Button(
-                onClick = { photoPicker.launch("image/*") }, 
-                modifier = Modifier.fillMaxWidth()
-            ) { 
-                Text("📸 Upload Face Photo") 
-            }
-            
+            Button(onClick = { photoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("📸 Upload Face Photo") }
             if (faces.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
                 faces.forEach { face ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).background(Color(0xFF2C2C2C), RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).background(Color(0xFF2C2C2C), RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(face.name, modifier = Modifier.weight(1f), color = Color.White)
-                        IconButton(onClick = { viewModel.removeFace(context, face.id) }) {
-                            Text("🗑️", color = Color.Red)
-                        }
+                        IconButton(onClick = { viewModel.removeFace(context, face.id) }) { Text("🗑️", color = Color.Red) }
                     }
                 }
             }
@@ -386,23 +325,17 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
-            Text("Device Alerts & Settings", style = MaterialTheme.typography.titleMedium)
+            Text("Device Alerts & AI Tuning", style = MaterialTheme.typography.titleMedium)
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) { Text("Popup Notifications", style = MaterialTheme.typography.bodyLarge) }
                 Switch(checked = popupNotifications, onCheckedChange = { popupNotifications = it; prefs.edit().putBoolean("enable_notifications", it).apply() })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { 
-                    Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge) 
-                    Text("Current model: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                Column(modifier = Modifier.weight(1f)) { Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge) }
                 Switch(checked = llmEnabled, onCheckedChange = { viewModel.toggleLlm(it) })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { 
-                    Text("Enable Face Recognition", style = MaterialTheme.typography.bodyLarge) 
-                    Text("Load biometric engine to bypass alerts for known faces", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                Column(modifier = Modifier.weight(1f)) { Text("Enable Face Recognition", style = MaterialTheme.typography.bodyLarge) }
                 Switch(checked = faceRecogEnabled, onCheckedChange = { viewModel.toggleFaceRecog(it) })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -411,37 +344,16 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             }
             
             Spacer(modifier = Modifier.height(16.dp))
-            Text("Hardware Acceleration", style = MaterialTheme.typography.titleMedium)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("CPU", "GPU", "NPU").forEach { backend ->
-                    Button(onClick = { aiBackend = backend; prefs.edit().putString("ai_backend", backend).apply() }, colors = ButtonDefaults.buttonColors(containerColor = if (aiBackend == backend) MaterialTheme.colorScheme.primary else Color.DarkGray), modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text(backend) }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(24.dp))
-            Text("AI Tuning & Polling", style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(8.dp))
             Text("Analyze 1 frame every: ${scanInterval.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
-            Slider(value = scanInterval, onValueChange = { scanInterval = it }, onValueChangeFinished = { prefs.edit().putFloat("scan_interval_sec", scanInterval).apply() }, valueRange = 1f..60f, steps = 58)
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
-            Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.0f..1.0f, steps = 100)
-
-            Spacer(modifier = Modifier.height(24.dp))
-            HorizontalDivider()
+            Slider(value = scanInterval, onValueChange = { scanInterval = it }, onValueChangeFinished = { prefs.edit().putFloat("scan_interval_sec", scanInterval).apply() }, valueRange = 1f..60f)
+            
             Spacer(modifier = Modifier.height(24.dp))
             Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("System Prompt defines the AI's core instructions and rules. User Prompt defines what to search the specific frame for.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            Spacer(modifier = Modifier.height(4.dp))
             OutlinedTextField(value = sysPrompt, onValueChange = { sysPrompt = it; prefs.edit().putString("prompt_sys", it).apply() }, label = { Text("System Prompt (Rules & Behavior)") }, modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt (Custom Trigger)") }, modifier = Modifier.fillMaxWidth())
 
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(onClick = { filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.isImporting) { Text(if (viewModel.isImporting) "Loading Model..." else "Select New Model") }
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
