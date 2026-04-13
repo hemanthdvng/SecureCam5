@@ -113,7 +113,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val securityToken = remember { prefs.getString("security_token", "") ?: "" }
         val localServer = remember { LocalSignalingServer(8081, securityToken) }
 
-        // HIGH-SPEED ATOMIC BUFFER
         val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
 
         DisposableEffect(Unit) {
@@ -147,7 +146,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
-        // --- LOOP 1: HIGH-SPEED DVR BUFFER (5 FPS) ---
+        // --- LOOP 1: HIGH-SPEED DVR BUFFER ---
         LaunchedEffect(Unit) {
             while(isActive) {
                 localRenderer.addFrameListener({ bitmap ->
@@ -185,7 +184,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 
                 val isSafe = text.contains("CLEAR") || text.contains("[STATUS_SAFE]")
                 
-                // TRIGGER AUTO-RECORDING
                 if (!isSafe) {
                     dvrEngine.triggerRecording()
                 }
