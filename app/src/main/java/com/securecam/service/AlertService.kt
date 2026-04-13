@@ -41,10 +41,14 @@ class AlertService : LifecycleService() {
         super.onCreate()
         createNotificationChannel()
         
-        // CRITICAL FIX: Android 14+ Strict Foreground Service Enforcement
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(202, createForegroundNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
+        // CRITICAL FIX: Graceful fallback for API levels
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(202, createForegroundNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(202, createForegroundNotification())
+            }
+        } catch (e: Exception) {
             startForeground(202, createForegroundNotification())
         }
         
