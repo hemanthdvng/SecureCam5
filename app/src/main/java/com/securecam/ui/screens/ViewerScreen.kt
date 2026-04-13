@@ -62,6 +62,9 @@ fun ViewerScreen(navController: NavController) {
         var localAudioTrack by remember { mutableStateOf<AudioTrack?>(null) }
         var isMicActive by remember { mutableStateOf(false) }
         
+        // DVR Vault Popup State
+        var showVault by remember { mutableStateOf(false) }
+        
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val viewerMode = prefs.getString("viewer_mode", "Firebase")
         val securityToken = prefs.getString("security_token", "") ?: ""
@@ -156,7 +159,6 @@ fun ViewerScreen(navController: NavController) {
                         "OFFER" -> processOffer(jsonStr)
                         "ICE" -> peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String))
                         "ALERT" -> {
-                            // Catch the TCP log directly to ensure it doesn't get dropped by UDP WebRTC DataChannels!
                             val text = map["text"] as? String ?: ""
                             val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
                             CoroutineScope(Dispatchers.Main).launch {
@@ -183,6 +185,27 @@ fun ViewerScreen(navController: NavController) {
                 peerConnection?.dispose()
                 rtcManager.dispose()
             }
+        }
+        
+        // --- VAULT WEBVIEW POPUP ---
+        if (showVault) {
+            AlertDialog(
+                onDismissRequest = { showVault = false },
+                modifier = Modifier.fillMaxSize().padding(16.dp),
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+                text = {
+                    AndroidView(factory = { ctx ->
+                        android.webkit.WebView(ctx).apply {
+                            settings.javaScriptEnabled = true
+                            val ip = prefs.getString("target_ip", "") ?: ""
+                            loadUrl("http://$ip:8080/vault?token=$securityToken")
+                        }
+                    }, modifier = Modifier.fillMaxSize())
+                },
+                confirmButton = {
+                    TextButton(onClick = { showVault = false }) { Text("Close Vault", fontSize = 16.sp, color = Color.Red) }
+                }
+            )
         }
 
         Scaffold(
@@ -240,24 +263,29 @@ fun ViewerScreen(navController: NavController) {
                         ) {
                             Button(
                                 onClick = { sendCommand("CMD_SIREN") }, 
-                                shape = CircleShape, modifier = Modifier.size(64.dp), contentPadding = PaddingValues(0.dp),
+                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
-                            ) { Text("🚨", fontSize = 28.sp) }
+                            ) { Text("🚨", fontSize = 24.sp) }
                             Button(
                                 onClick = { sendCommand("CMD_FLASH") }, 
-                                shape = CircleShape, modifier = Modifier.size(64.dp), contentPadding = PaddingValues(0.dp),
+                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF512DA8))
-                            ) { Text("🔦", fontSize = 28.sp) }
+                            ) { Text("🔦", fontSize = 24.sp) }
                             Button(
                                 onClick = { sendCommand("CMD_SWITCH_CAM") }, 
-                                shape = CircleShape, modifier = Modifier.size(64.dp), contentPadding = PaddingValues(0.dp),
+                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
-                            ) { Text("🔄", fontSize = 28.sp) }
+                            ) { Text("🔄", fontSize = 24.sp) }
                             Button(
                                 onClick = { sendCommand("CMD_FORCE_SCAN") }, 
-                                shape = CircleShape, modifier = Modifier.size(64.dp), contentPadding = PaddingValues(0.dp),
+                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF388E3C))
-                            ) { Text("🔍", fontSize = 28.sp) }
+                            ) { Text("🔍", fontSize = 24.sp) }
+                            Button(
+                                onClick = { showVault = true }, 
+                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
+                            ) { Text("📁", fontSize = 24.sp) }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
