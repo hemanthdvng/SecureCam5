@@ -30,14 +30,25 @@ class HybridAIPipeline @Inject constructor(
     private var isLlmBusy = false
     private var isLlmInitialized = false
     private var isLlmEnabledSetting = true
+    private var isFaceRecogEnabledSetting = true
 
     init { 
         aiScope.launch { settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it } } 
+        aiScope.launch { 
+            settingsRepository.isFaceRecogEnabled.collect { enabled ->
+                isFaceRecogEnabledSetting = enabled
+                if (enabled) {
+                    biometricEngine.initialize()
+                } else {
+                    biometricEngine.close()
+                }
+            }
+        }
     }
 
     fun start() {
         llmAnalyzer.initialize { result -> isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) }
-        aiScope.launch { biometricEngine.initialize() }
+        // Biometric Engine initialize is now handled dynamically in the init block listener
     }
 
     fun stop() {
@@ -55,27 +66,29 @@ class HybridAIPipeline @Inject constructor(
                     return@launch
                 }
                 
-                val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-                val savedEmbeddingStr = prefs.getString("authorized_face_vector", "") ?: ""
-                var isFaceAuthorized = false
-                
-                if (savedEmbeddingStr.isNotBlank()) {
-                    val currentFaceVector = biometricEngine.getFaceEmbedding(bitmap)
-                    if (currentFaceVector != null) {
-                        val type = object : TypeToken<FloatArray>() {}.type
-                        val savedFaceVector: FloatArray = Gson().fromJson(savedEmbeddingStr, type)
-                        
-                        val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, savedFaceVector)
-                        if (similarity > 0.65f) {
-                            isFaceAuthorized = true
+                if (isFaceRecogEnabledSetting) {
+                    val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                    val savedEmbeddingStr = prefs.getString("authorized_face_vector", "") ?: ""
+                    var isFaceAuthorized = false
+                    
+                    if (savedEmbeddingStr.isNotBlank()) {
+                        val currentFaceVector = biometricEngine.getFaceEmbedding(bitmap)
+                        if (currentFaceVector != null) {
+                            val type = object : TypeToken<FloatArray>() {}.type
+                            val savedFaceVector: FloatArray = Gson().fromJson(savedEmbeddingStr, type)
+                            
+                            val similarity = biometricEngine.calculateCosineSimilarity(currentFaceVector, savedFaceVector)
+                            if (similarity > 0.65f) {
+                                isFaceAuthorized = true
+                            }
                         }
                     }
-                }
 
-                if (isFaceAuthorized) {
-                    eventRepository.emitEvent(SecurityEvent("BIOMETRIC", "🛡️ Authorized Face Detected (Local Match). Disabling Alerts.", 1.0f))
-                    bitmap.recycle()
-                    return@launch
+                    if (isFaceAuthorized) {
+                        eventRepository.emitEvent(SecurityEvent("BIOMETRIC", "🛡️ Authorized Face Detected (Local Match). Disabling Alerts.", 1.0f))
+                        bitmap.recycle()
+                        return@launch
+                    }
                 }
                 
                 triggerLlmAnalysis(bitmap)
@@ -112,7 +125,6 @@ class HybridAIPipeline @Inject constructor(
             "AUTHORIZED PERSONNEL: $knownPersons. If you only see these authorized individuals, reply EXACTLY '[STATUS_SAFE]'. "
         } else ""
 
-        // FIX: Remove the [STATUS_SAFE] bypass if the user sets the threshold to 0%
         val enforcedPrompt = if (percentReq > 0) {
             "$basePrompt $personaRule ONLY report if you are at least $percentReq% confident there is an UNKNOWN threat or unauthorized person. If there is no threat, or the image is dark, reply EXACTLY '[STATUS_SAFE]'."
         } else {
@@ -131,7 +143,6 @@ class HybridAIPipeline @Inject constructor(
                     onDone = { text -> 
                         val output = text.trim()
                         
-                        // FIX: Force an alert no matter what if the slider is at 0
                         val isSafe = if (percentReq == 0) {
                             false
                         } else {
