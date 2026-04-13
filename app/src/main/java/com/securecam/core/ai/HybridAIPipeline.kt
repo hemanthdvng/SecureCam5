@@ -36,7 +36,7 @@ class HybridAIPipeline @Inject constructor(
         aiScope.launch { 
             try {
                 settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it } 
-            } catch (e: Exception) { Log.e("HybridAIPipeline", "LLM Setting error", e) }
+            } catch (e: Exception) {}
         } 
         
         aiScope.launch { 
@@ -44,16 +44,12 @@ class HybridAIPipeline @Inject constructor(
                 settingsRepository.isFaceRecogEnabled.collect { enabled ->
                     isFaceRecogEnabledSetting = enabled
                     try {
-                        if (enabled) {
-                            biometricEngine.initialize()
-                        } else {
-                            biometricEngine.close()
-                        }
+                        if (enabled) biometricEngine.initialize() else biometricEngine.close()
                     } catch (e: Exception) {
-                        Log.e("HybridAIPipeline", "Failed to initialize BiometricEngine", e)
+                        eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Init Error: ${e.message}", 1.0f))
                     }
                 }
-            } catch (e: Exception) { Log.e("HybridAIPipeline", "Face Setting error", e) }
+            } catch (e: Exception) {}
         }
     }
 
@@ -61,11 +57,10 @@ class HybridAIPipeline @Inject constructor(
         llmAnalyzer.initialize { result -> 
             isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) 
             aiScope.launch {
-                // CRITICAL FIX: Emit systemic feedback to the UI list so you know if the LLM actually booted
                 if (isLlmInitialized) {
                     eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Engine Initialized & Online.", 1.0f))
                 } else {
-                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Failed to load. Did you import a valid .litertlm model in Settings?", 1.0f))
+                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Failed to load. Check your .litertlm file.", 1.0f))
                 }
             }
         }
@@ -83,15 +78,15 @@ class HybridAIPipeline @Inject constructor(
             try {
                 var skipLlm = false
                 
-                // CRITICAL FIX: Run Face Recognition FIRST, fully independent of LLM readiness
+                // --- PHASE 1: BIOMETRIC ENGINE ---
                 if (isFaceRecogEnabledSetting) {
-                    val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-                    val savedFacesJson = prefs.getString("authorized_faces", "[]") ?: "[]"
-                    val type = object : TypeToken<List<RegisteredFace>>() {}.type
-                    val savedFaces: List<RegisteredFace> = Gson().fromJson(savedFacesJson, type) ?: emptyList()
-                    
-                    if (savedFaces.isNotEmpty()) {
-                        try {
+                    try {
+                        val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                        val savedFacesJson = prefs.getString("authorized_faces", "[]") ?: "[]"
+                        val type = object : TypeToken<List<RegisteredFace>>() {}.type
+                        val savedFaces: List<RegisteredFace> = Gson().fromJson(savedFacesJson, type) ?: emptyList()
+                        
+                        if (savedFaces.isNotEmpty()) {
                             val currentFaceVector = biometricEngine.getFaceEmbedding(bitmap)
                             if (currentFaceVector != null) {
                                 for (face in savedFaces) {
@@ -103,9 +98,10 @@ class HybridAIPipeline @Inject constructor(
                                     }
                                 }
                             }
-                        } catch (e: Exception) {
-                            Log.e("HybridAIPipeline", "Face Embedding failed", e)
                         }
+                    } catch (e: Exception) {
+                        // CRITICAL FIX: If Face Recog crashes, it prints to the UI instead of silently killing the LLM
+                        eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Engine Error: ${e.message}", 1.0f))
                     }
                 }
 
@@ -114,13 +110,27 @@ class HybridAIPipeline @Inject constructor(
                     return@launch
                 }
                 
-                if (!isLlmEnabledSetting || !isLlmInitialized || isLlmBusy) {
+                // --- PHASE 2: LLM ENGINE ---
+                if (!isLlmEnabledSetting) {
+                    bitmap.recycle()
+                    return@launch
+                }
+                
+                if (!isLlmInitialized) {
+                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Waiting for LLM to boot...", 1.0f))
+                    bitmap.recycle()
+                    return@launch
+                }
+                
+                if (isLlmBusy) {
                     bitmap.recycle()
                     return@launch
                 }
                 
                 triggerLlmAnalysis(bitmap)
+                
             } catch (e: Throwable) { 
+                eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Pipeline Critical Crash: ${e.message}", 1.0f))
                 bitmap.recycle() 
             }
         }
@@ -164,36 +174,42 @@ class HybridAIPipeline @Inject constructor(
         val usrPrompt = prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: ""
 
         try {
-            suspendCancellableCoroutine<Unit> { continuation ->
-                llmAnalyzer.analyze(
-                    bitmap = bitmap,
-                    systemPrompt = enforcedPrompt,
-                    userPrompt = usrPrompt,
-                    onToken = { },
-                    onDone = { text -> 
-                        val output = text.trim()
-                        
-                        val isSafe = if (percentReq == 0) {
-                            false
-                        } else {
-                            output.contains("[STATUS_SAFE]", ignoreCase = true) || output.contains("provide an image", ignoreCase = true)
-                        }
-                        
-                        if (!isSafe || debugMode) {
-                            aiScope.launch {
-                                val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Threat" else "🚨 $output"
-                                eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
-                                if (!isSafe) dispatchFirebaseAlert(output)
+            // CRITICAL FIX: 15-second safety timeout prevents hardware from hanging the loop forever
+            val result = withTimeoutOrNull(15000L) {
+                suspendCancellableCoroutine<Boolean> { continuation ->
+                    llmAnalyzer.analyze(
+                        bitmap = bitmap,
+                        systemPrompt = enforcedPrompt,
+                        userPrompt = usrPrompt,
+                        onToken = { },
+                        onDone = { text -> 
+                            val output = text.trim()
+                            val isSafe = if (percentReq == 0) false else (output.contains("[STATUS_SAFE]", ignoreCase = true) || output.contains("provide an image", ignoreCase = true))
+                            
+                            if (!isSafe || debugMode) {
+                                aiScope.launch {
+                                    val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Threat" else "🚨 $output"
+                                    eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
+                                    if (!isSafe) dispatchFirebaseAlert(output)
+                                }
                             }
+                            if (continuation.isActive) continuation.resume(true)
+                        },
+                        onError = { err -> 
+                            aiScope.launch { eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Inference Error: $err", 1.0f)) }
+                            if (continuation.isActive) continuation.resume(false) 
                         }
-                        if (continuation.isActive) continuation.resume(Unit)
-                    },
-                    onError = { if (continuation.isActive) continuation.resume(Unit) }
-                )
+                    )
+                }
             }
+            
+            if (result == null) {
+                eventRepository.emitEvent(SecurityEvent("SYSTEM", "🚨 [SYSTEM] LLM Hardware Timed Out! Resetting engine lock.", 1.0f))
+            }
+
         } finally {
             isLlmBusy = false
-            bitmap.recycle()
+            if (!bitmap.isRecycled) bitmap.recycle()
         }
     }
 }
