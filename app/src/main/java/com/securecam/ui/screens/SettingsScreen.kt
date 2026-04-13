@@ -72,8 +72,14 @@ class SettingsViewModel @Inject constructor(
         currentModelName = prefs.getString("selected_model", "None") ?: "None"
         
         val json = prefs.getString("authorized_faces", "[]") ?: "[]"
-        val type = object : TypeToken<List<RegisteredFace>>() {}.type
-        _registeredFaces.value = Gson().fromJson(json, type) ?: emptyList()
+        try {
+            val type = object : TypeToken<List<RegisteredFace>>() {}.type
+            _registeredFaces.value = Gson().fromJson(json, type) ?: emptyList()
+        } catch (e: Exception) {
+            // FIX: Cleans up corrupted data from older versions to prevent crash loops
+            prefs.edit().remove("authorized_faces").apply()
+            _registeredFaces.value = emptyList()
+        }
     }
 
     fun toggleLlm(enabled: Boolean) { viewModelScope.launch { repository.setLlmEnabled(enabled) } }
@@ -119,7 +125,6 @@ class SettingsViewModel @Inject constructor(
                     MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
                 }
 
-                // Scale down to avoid OOM
                 if (bmp.width > 1500 || bmp.height > 1500) {
                     val scale = 1500f / maxOf(bmp.width, bmp.height)
                     bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
@@ -192,8 +197,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     
     var viewerMode by remember { mutableStateOf(prefs.getString("viewer_mode", "Firebase") ?: "Firebase") }
     var targetIp by remember { mutableStateOf(prefs.getString("target_ip", "") ?: "") }
-    var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f)) }
-    var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f)) }
+    
+    // FIX: Bounds enforcement prevents Sliders from crashing Compose Engine
+    var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
+    var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f).coerceIn(0.0f, 1.0f)) }
+    
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", true)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
     var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
