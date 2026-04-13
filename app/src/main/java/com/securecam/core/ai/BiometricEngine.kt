@@ -19,9 +19,6 @@ class BiometricEngine(private val context: Context) {
     private var interpreter: Interpreter? = null
     private val IMAGE_SIZE = 112
     private val EMBEDDING_SIZE = 192
-    
-    // CRITICAL FIX: Re-routed to an active, highly stable mirror to fix the HTTP 404 error
-    private val MODEL_URL = "https://raw.githubusercontent.com/MCarlomagno/FaceRecognitionAuth/master/assets/mobilefacenet.tflite"
 
     suspend fun initialize() = withContext(Dispatchers.IO) {
         val modelFile = File(context.filesDir, "mobilefacenet.tflite")
@@ -33,21 +30,38 @@ class BiometricEngine(private val context: Context) {
 
         if (!modelFile.exists()) {
             Log.d("BiometricEngine", "Downloading MobileFaceNet...")
-            val url = java.net.URL(MODEL_URL)
-            val connection = url.openConnection() as java.net.HttpURLConnection
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-            connection.connect()
-
-            if (connection.responseCode != java.net.HttpURLConnection.HTTP_OK) {
-                throw IllegalStateException("Failed to download model. HTTP ${connection.responseCode}")
-            }
-
-            connection.inputStream.use { input ->
-                modelFile.outputStream().use { output ->
-                    input.copyTo(output)
+            
+            // CRITICAL FIX: Try multiple repository mirrors in sequence. If one gives a 404, it moves to the next.
+            val mirrors = listOf(
+                "https://raw.githubusercontent.com/Rajatkhandouja/Face-Recognition-Android/master/app/src/main/assets/mobile_face_net.tflite",
+                "https://raw.githubusercontent.com/MCarlomagno/FaceRecognitionAuth/master/assets/mobilefacenet.tflite",
+                "https://raw.githubusercontent.com/shubham0204/Face_Recognition_with_FaceNet_Android/master/app/src/main/assets/mobile_face_net.tflite"
+            )
+            
+            var downloaded = false
+            for (urlStr in mirrors) {
+                try {
+                    val url = java.net.URL(urlStr)
+                    val connection = url.openConnection() as java.net.HttpURLConnection
+                    connection.requestMethod = "GET"
+                    connection.connectTimeout = 10000
+                    connection.readTimeout = 10000
+                    connection.connect()
+                    
+                    if (connection.responseCode == java.net.HttpURLConnection.HTTP_OK) {
+                        connection.inputStream.use { input ->
+                            modelFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        downloaded = true
+                        break
+                    }
+                } catch (e: Exception) {
+                    Log.w("BiometricEngine", "Mirror failed: $urlStr")
                 }
+            }
+            
+            if (!downloaded) {
+                throw IllegalStateException("All GitHub model mirrors failed or returned HTTP 404.")
             }
         }
 
