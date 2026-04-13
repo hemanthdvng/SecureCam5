@@ -1,18 +1,37 @@
 package com.securecam.ui.screens
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(navController: NavController) {
+    var showHelp by remember { mutableStateOf(false) }
+
+    if (showHelp) {
+        AlertDialog(
+            onDismissRequest = { showHelp = false },
+            title = { Text("How to use SecureCam") },
+            text = {
+                Text(
+                    "SecureCam uses two devices to create a private security network.\n\n" +
+                    "1. CAMERA DEVICE:\nPlace your old phone in the room and open 'Camera Mode'. It will analyze the room using AI.\n\n" +
+                    "2. VIEWER DEVICE:\nUse your main phone and open 'Viewer Mode' to watch the live feed.\n\n" +
+                    "SYNCING:\nGo to Settings on your Viewer device, adjust your AI Prompts or Face Recognition, and click 'Sync Settings to Camera' to push your rules remotely over Wi-Fi."
+                )
+            },
+            confirmButton = { TextButton(onClick = { showHelp = false }) { Text("Got it") } }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -22,6 +41,9 @@ fun MainScreen(navController: NavController) {
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 ),
                 actions = {
+                    IconButton(onClick = { showHelp = true }) {
+                        Icon(Icons.Default.Info, contentDescription = "Help")
+                    }
                     TextButton(onClick = { navController.navigate("settings") }) {
                         Text("⚙️ Settings")
                     }
@@ -43,24 +65,7 @@ fun MainScreen(navController: NavController) {
                 color = MaterialTheme.colorScheme.secondary,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = "Welcome to SecureCam. To begin, install this app on two devices.\n\n" +
-                           "1. Set one device to Camera Mode and leave it in the room.\n" +
-                           "2. Use your personal phone in Viewer Mode to connect to it.\n\n" +
-                           "You can push AI rules and settings dynamically from the Viewer to the Camera using the Sync button inside the Viewer screen.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(16.dp)
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(48.dp))
             
             ElevatedCard(
                 onClick = { navController.navigate("camera") },
