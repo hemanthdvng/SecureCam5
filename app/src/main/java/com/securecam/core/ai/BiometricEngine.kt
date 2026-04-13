@@ -20,8 +20,8 @@ class BiometricEngine(private val context: Context) {
     private val IMAGE_SIZE = 112
     private val EMBEDDING_SIZE = 192
     
-    // CRITICAL FIX: Re-routed from dead URL (404) to a stable, actively maintained 192-dimension MobileFaceNet model
-    private val MODEL_URL = "https://raw.githubusercontent.com/MCarlomagno/FaceRecognitionAuth/master/assets/mobilefacenet.tflite"
+    // CRITICAL FIX: Reverted to the stable, verified URL to fix the HTTP 404 error
+    private val MODEL_URL = "https://raw.githubusercontent.com/shubham0204/Face_Recognition_with_FaceNet_Android/master/app/src/main/assets/mobile_face_net.tflite"
 
     suspend fun initialize() = withContext(Dispatchers.IO) {
         val modelFile = File(context.filesDir, "mobilefacenet.tflite")
