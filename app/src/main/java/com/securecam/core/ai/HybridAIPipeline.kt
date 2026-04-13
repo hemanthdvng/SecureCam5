@@ -31,6 +31,9 @@ class HybridAIPipeline @Inject constructor(
     private var isLlmInitialized = false
     private var isLlmEnabledSetting = true
     private var isFaceRecogEnabledSetting = true
+    
+    // Heartbeat monitor flag
+    private var firstFrameReceived = false
 
     init { 
         aiScope.launch { 
@@ -54,6 +57,7 @@ class HybridAIPipeline @Inject constructor(
     }
 
     fun start() {
+        firstFrameReceived = false
         llmAnalyzer.initialize { result -> 
             isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) 
             aiScope.launch {
@@ -71,14 +75,20 @@ class HybridAIPipeline @Inject constructor(
         try { biometricEngine.close() } catch (e: Exception) {}
         isLlmInitialized = false
         isLlmBusy = false
+        firstFrameReceived = false
     }
 
     fun processFrame(bitmap: Bitmap) {
         aiScope.launch {
             try {
+                // CRITICAL FIX: Logs the first frame receipt so the user visually knows the camera loop is not frozen
+                if (!firstFrameReceived) {
+                    firstFrameReceived = true
+                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Camera heartbeat established. AI is receiving live frames.", 1.0f))
+                }
+
                 var skipLlm = false
                 
-                // --- PHASE 1: BIOMETRIC ENGINE ---
                 if (isFaceRecogEnabledSetting) {
                     try {
                         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -109,14 +119,12 @@ class HybridAIPipeline @Inject constructor(
                     return@launch
                 }
                 
-                // --- PHASE 2: LLM ENGINE ---
                 if (!isLlmEnabledSetting) {
                     bitmap.recycle()
                     return@launch
                 }
                 
                 if (!isLlmInitialized) {
-                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Waiting for LLM to boot...", 1.0f))
                     bitmap.recycle()
                     return@launch
                 }
@@ -173,7 +181,6 @@ class HybridAIPipeline @Inject constructor(
         val usrPrompt = prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: ""
 
         try {
-            // CRITICAL FIX: 15-second safety timeout prevents hardware from hanging the loop forever
             val result = withTimeoutOrNull(15000L) {
                 suspendCancellableCoroutine<Boolean> { continuation ->
                     llmAnalyzer.analyze(
@@ -195,7 +202,6 @@ class HybridAIPipeline @Inject constructor(
                             if (continuation.isActive) continuation.resume(true)
                         },
                         onError = { err -> 
-                            // CRITICAL FIX: Prevent silent failures by logging the exact error to the UI
                             aiScope.launch { eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Inference Error: $err", 1.0f)) }
                             if (continuation.isActive) continuation.resume(false) 
                         }
