@@ -1,29 +1,18 @@
 package com.securecam.ui.screens
 
-import android.Manifest
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(navController: NavController) {
-    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -50,18 +39,35 @@ fun MainScreen(navController: NavController) {
         ) {
             Text(
                 "WatchTower AI Engine",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.secondary
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.secondary,
+                fontWeight = FontWeight.Bold
             )
+            Spacer(modifier = Modifier.height(16.dp))
             
-            Spacer(modifier = Modifier.height(48.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Welcome to SecureCam. To begin, install this app on two devices.\n\n" +
+                           "1. Set one device to Camera Mode and leave it in the room.\n" +
+                           "2. Use your personal phone in Viewer Mode to connect to it.\n\n" +
+                           "You can push AI rules and settings dynamically from the Viewer to the Camera using the Sync button inside the Viewer screen.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(16.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(32.dp))
             
             ElevatedCard(
                 onClick = { navController.navigate("camera") },
-                modifier = Modifier.fillMaxWidth().height(100.dp)
+                modifier = Modifier.fillMaxWidth().height(90.dp)
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Text("📷 Camera Mode", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("📷 Run as Camera Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
             
@@ -69,10 +75,10 @@ fun MainScreen(navController: NavController) {
             
             ElevatedCard(
                 onClick = { navController.navigate("viewer") },
-                modifier = Modifier.fillMaxWidth().height(100.dp)
+                modifier = Modifier.fillMaxWidth().height(90.dp)
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Text("👁️ Viewer Mode", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("👁️ Run as Viewer Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -80,10 +86,10 @@ fun MainScreen(navController: NavController) {
             
             ElevatedCard(
                 onClick = { navController.navigate("logs") },
-                modifier = Modifier.fillMaxWidth().height(100.dp)
+                modifier = Modifier.fillMaxWidth().height(90.dp)
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Text("📋 Security Logs", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("📋 Offline Security Logs", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
         }
