@@ -30,7 +30,7 @@ open class SimplePeerConnectionObserver : PeerConnection.Observer {
 class WebRTCManager(private val context: Context) {
     val rootEglBase: EglBase = EglBase.create()
     var peerConnectionFactory: PeerConnectionFactory? = null
-    private var videoCapturer: VideoCapturer? = null
+    var videoCapturer: CameraVideoCapturer? = null
 
     init {
         val initOptions = PeerConnectionFactory.InitializationOptions.builder(context)
@@ -52,13 +52,12 @@ class WebRTCManager(private val context: Context) {
     fun initRenderer(renderer: SurfaceViewRenderer) {
         renderer.init(rootEglBase.eglBaseContext, null)
         renderer.setEnableHardwareScaler(true)
-        renderer.setMirror(false) // Use true for front-camera, false for back-camera
+        renderer.setMirror(false) 
     }
 
     fun createLocalVideoTrack(context: Context, renderer: SurfaceViewRenderer): VideoTrack? {
         val enumerator = Camera2Enumerator(context)
         val deviceNames = enumerator.deviceNames
-        // We prioritize the back camera for a security system
         val cameraName = deviceNames.firstOrNull { enumerator.isBackFacing(it) } ?: deviceNames.firstOrNull()
         
         videoCapturer = cameraName?.let { enumerator.createCapturer(it, null) }
@@ -74,15 +73,15 @@ class WebRTCManager(private val context: Context) {
         return videoTrack
     }
 
-    fun createPeerConnection(observer: PeerConnection.Observer): PeerConnection? {
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-        )
-        val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
-        rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
-        
-        return peerConnectionFactory?.createPeerConnection(rtcConfig, observer)
+    // New: Bi-Directional Audio Support
+    fun createLocalAudioTrack(): AudioTrack? {
+        val audioSource = peerConnectionFactory?.createAudioSource(MediaConstraints())
+        return peerConnectionFactory?.createAudioTrack("audio_track", audioSource)
+    }
+
+    // New: Flip Camera Lens
+    fun switchCamera() {
+        videoCapturer?.switchCamera(null)
     }
 
     fun dispose() {
