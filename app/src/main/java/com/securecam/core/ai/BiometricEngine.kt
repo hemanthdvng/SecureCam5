@@ -6,31 +6,39 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.Interpreter
-import java.io.FileInputStream
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.channels.FileChannel
 import kotlin.math.sqrt
 
 class BiometricEngine(private val context: Context) {
     private var interpreter: Interpreter? = null
     private val IMAGE_SIZE = 112
     private val EMBEDDING_SIZE = 192
+    
+    private val MODEL_URL = "https://raw.githubusercontent.com/shubham0204/Face_Recognition_with_FaceNet_Android/master/app/src/main/assets/mobile_face_net.tflite"
 
-    fun initialize() {
+    suspend fun initialize() = withContext(Dispatchers.IO) {
         try {
-            val assetFileDescriptor = context.assets.openFd("mobilefacenet.tflite")
-            val fileInputStream = FileInputStream(assetFileDescriptor.fileDescriptor)
-            val fileChannel = fileInputStream.channel
-            val startOffset = assetFileDescriptor.startOffset
-            val declaredLength = assetFileDescriptor.declaredLength
-            val modelBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
+            val modelFile = File(context.filesDir, "mobilefacenet.tflite")
             
+            // AUTO-DOWNLOADER: Fetch model from open-source repo if missing
+            if (!modelFile.exists()) {
+                Log.d("BiometricEngine", "Model missing. Downloading MobileFaceNet...")
+                val url = java.net.URL(MODEL_URL)
+                url.openStream().use { input ->
+                    modelFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                Log.d("BiometricEngine", "Download complete!")
+            }
+
             val options = Interpreter.Options().apply { numThreads = 4 }
-            interpreter = Interpreter(modelBuffer, options)
+            interpreter = Interpreter(modelFile, options)
             Log.d("BiometricEngine", "MobileFaceNet initialized successfully.")
         } catch (e: Exception) {
-            Log.e("BiometricEngine", "Failed to load mobilefacenet.tflite. Ensure model is in assets folder.", e)
+            Log.e("BiometricEngine", "Failed to load mobilefacenet.tflite.", e)
         }
     }
 
