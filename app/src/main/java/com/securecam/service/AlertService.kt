@@ -69,10 +69,13 @@ class AlertService : LifecycleService() {
         CoroutineScope(Dispatchers.IO).launch {
             eventRepository.securityEvents.collect { event ->
                 val popupEnabled = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).getBoolean("enable_notifications", true)
-                val isSafe = event.description.contains("[STATUS_SAFE]") || event.description.contains("CLEAR")
                 
-                // CRITICAL FIX: Removed the "REMOTE_ALERT" block so Viewers can get background popups.
-                // Added a 5-second timer instead so the Camera device doesn't double-popup on the same threat.
+                // CRITICAL FIX: The Notification Mix-up is solved. "Authorized Face" and "BIOMETRIC" are now correctly treated as Safe.
+                val isSafe = event.description.contains("[STATUS_SAFE]", ignoreCase = true) || 
+                             event.description.contains("CLEAR", ignoreCase = true) || 
+                             event.type == "BIOMETRIC" ||
+                             event.description.contains("Authorized Face", ignoreCase = true)
+                
                 if (popupEnabled && !isSafe) {
                     val now = System.currentTimeMillis()
                     if (event.description != lastPopupText || (now - lastPopupTime > 5000)) {
