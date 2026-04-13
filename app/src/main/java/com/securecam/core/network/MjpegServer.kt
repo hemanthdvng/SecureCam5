@@ -48,7 +48,6 @@ class MjpegServer(private val context: Context) {
 
                             val out = client?.getOutputStream()
                             
-                            // ROUTING ENGINE: Serve Vault HTML or Live MJPEG
                             if (requestLine.contains("GET /vault")) {
                                 val html = buildVaultHtml(requiredToken)
                                 out?.write(("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n$html").toByteArray())
@@ -116,8 +115,6 @@ class MjpegServer(private val context: Context) {
     private fun buildPlayerHtml(id: String, token: String): String {
         val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), id)
         val frames = dir.listFiles()?.filter { it.name.endsWith(".jpg") }?.sortedBy { it.name }?.map { it.name } ?: emptyList()
-        
-        // COMPILER FIX: Calculate variables outside of the raw string to prevent Kotlin parser crash
         val framesJson = if (frames.isEmpty()) "[]" else frames.joinToString("','", "['", "']")
         val firstFrame = frames.firstOrNull() ?: ""
         
@@ -137,3 +134,13 @@ class MjpegServer(private val context: Context) {
                         document.getElementById('player').src = '/frame?id=$id&frame=' + frames[i] + '&token=$token';
                     }, 200);
                 }
+            </scr${"i"}pt>
+            </body></html>
+        """.trimIndent()
+    }
+
+    fun stop() {
+        isRunning = false
+        try { serverSocket?.close() } catch(e: Exception) {}
+    }
+}
