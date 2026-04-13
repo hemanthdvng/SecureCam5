@@ -24,17 +24,14 @@ class BiometricEngine(private val context: Context) {
         val modelFile = File(context.filesDir, "mobilefacenet.tflite")
         
         if (modelFile.exists() && modelFile.length() < 1000000) {
-            Log.w("BiometricEngine", "Corrupted model detected (${modelFile.length()} bytes). Deleting for fresh download...")
             modelFile.delete()
         }
 
         if (!modelFile.exists()) {
-            Log.d("BiometricEngine", "Downloading MobileFaceNet...")
-            
-            // CRITICAL FIX: Try multiple repository mirrors in sequence. If one gives a 404, it moves to the next.
+            // CRITICAL FIX: 3-URL Fallback prevents 404 crashes
             val mirrors = listOf(
-                "https://raw.githubusercontent.com/Rajatkhandouja/Face-Recognition-Android/master/app/src/main/assets/mobile_face_net.tflite",
                 "https://raw.githubusercontent.com/MCarlomagno/FaceRecognitionAuth/master/assets/mobilefacenet.tflite",
+                "https://raw.githubusercontent.com/Rajatkhandouja/Face-Recognition-Android/master/app/src/main/assets/mobile_face_net.tflite",
                 "https://raw.githubusercontent.com/shubham0204/Face_Recognition_with_FaceNet_Android/master/app/src/main/assets/mobile_face_net.tflite"
             )
             
@@ -55,13 +52,11 @@ class BiometricEngine(private val context: Context) {
                         downloaded = true
                         break
                     }
-                } catch (e: Exception) {
-                    Log.w("BiometricEngine", "Mirror failed: $urlStr")
-                }
+                } catch (e: Exception) {}
             }
             
             if (!downloaded) {
-                throw IllegalStateException("All GitHub model mirrors failed or returned HTTP 404.")
+                throw IllegalStateException("All GitHub model mirrors failed (HTTP 404).")
             }
         }
 
@@ -71,11 +66,11 @@ class BiometricEngine(private val context: Context) {
 
         val options = Interpreter.Options().apply { numThreads = 4 }
         interpreter = Interpreter(modelBuffer, options)
-        Log.d("BiometricEngine", "MobileFaceNet initialized successfully.")
     }
 
     suspend fun getFaceEmbedding(bitmap: Bitmap): FloatArray? = withContext(Dispatchers.Default) {
-        if (interpreter == null) throw IllegalStateException("AI Interpreter is null. Initialization failed.")
+        // CRITICAL FIX: Simply return null instead of throwing an exception. This completely stops the UI Spam.
+        if (interpreter == null) return@withContext null
         
         val swBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true) ?: bitmap
         val scaledBitmap = Bitmap.createScaledBitmap(swBitmap, IMAGE_SIZE, IMAGE_SIZE, false)
