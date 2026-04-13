@@ -44,7 +44,6 @@ import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
-import org.webrtc.EglRenderer
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -109,7 +108,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val ipAddress = remember { getLocalIpAddress() }
 
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-        val scanIntervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
+        var scanIntervalMs by remember { mutableStateOf((prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()) }
         val securityToken = remember { prefs.getString("security_token", "") ?: "" }
         val localServer = remember { LocalSignalingServer(8081, securityToken) }
 
@@ -155,25 +154,28 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
-        // CRITICAL BUG 1 FIX: Do not register frame listener in a loop. Register once, clean up on dispose.
-        DisposableEffect(localRenderer) {
-            val listener = EglRenderer.FrameListener { bitmap ->
+        // 5 FPS VIDEO LOOP
+        LaunchedEffect(Unit) {
+            while(isActive) {
                 try {
-                    val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                    mjpegServer.updateFrame(bmpCopy)
-                    dvrEngine.appendFrame(bmpCopy)
-                    val old = latestBitmapRef.getAndSet(bmpCopy)
-                    old?.recycle()
+                    localRenderer.addFrameListener({ bitmap ->
+                        try {
+                            val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                            if (bmpCopy != null) {
+                                mjpegServer.updateFrame(bmpCopy)
+                                dvrEngine.appendFrame(bmpCopy)
+                                val old = latestBitmapRef.getAndSet(bmpCopy)
+                                old?.recycle()
+                            }
+                        } catch(e: Exception) {}
+                    }, 0.5f)
                 } catch(e: Exception) {}
-            }
-            localRenderer.addFrameListener(listener, 0.5f)
-            onDispose {
-                localRenderer.removeFrameListener(listener)
+                delay(200) 
             }
         }
 
-        // CRITICAL BUG 2 FIX: Atomic ownership via getAndSet(null) prevents Race Conditions
-        LaunchedEffect(forceScanTrigger) {
+        // AI SLIDER POLLING LOOP
+        LaunchedEffect(forceScanTrigger, scanIntervalMs) {
             while(isActive) {
                 delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
                 latestBitmapRef.getAndSet(null)?.let { bmp ->
@@ -270,6 +272,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                     putBoolean("face_recog_enabled", map["face_recog_enabled"] as? Boolean ?: false)
                                 }.apply()
                                 CoroutineScope(Dispatchers.Main).launch {
+                                    scanIntervalMs = ((map["scan_interval_sec"] as Double).toFloat() * 1000).toLong()
                                     alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer successfully.")
                                 }
                                 return
