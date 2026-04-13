@@ -49,6 +49,8 @@ class HybridAIPipeline @Inject constructor(
                         if (enabled) biometricEngine.initialize() else biometricEngine.close()
                     } catch (e: Exception) {
                         eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Init Error: ${e.message}", 1.0f))
+                        // CRITICAL ANTI-SPAM: Automatically disable the face engine if it fails to initialize so it doesn't spam the UI
+                        isFaceRecogEnabledSetting = false
                     }
                 }
             } catch (e: Exception) {}
@@ -107,9 +109,7 @@ class HybridAIPipeline @Inject constructor(
                                 }
                             }
                         }
-                    } catch (e: Exception) {
-                        eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Engine Error: ${e.message}", 1.0f))
-                    }
+                    } catch (e: Exception) {} // No longer emitting to UI, preventing spam
                 }
 
                 if (skipLlm) {
@@ -117,17 +117,7 @@ class HybridAIPipeline @Inject constructor(
                     return@launch
                 }
                 
-                if (!isLlmEnabledSetting) {
-                    bitmap.recycle()
-                    return@launch
-                }
-                
-                if (!isLlmInitialized) {
-                    bitmap.recycle()
-                    return@launch
-                }
-                
-                if (isLlmBusy) {
+                if (!isLlmEnabledSetting || !isLlmInitialized || isLlmBusy) {
                     bitmap.recycle()
                     return@launch
                 }
@@ -135,7 +125,6 @@ class HybridAIPipeline @Inject constructor(
                 triggerLlmAnalysis(bitmap)
                 
             } catch (e: Throwable) { 
-                eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Pipeline Critical Crash: ${e.message}", 1.0f))
                 bitmap.recycle() 
             }
         }
@@ -170,8 +159,7 @@ class HybridAIPipeline @Inject constructor(
             "AUTHORIZED PERSONNEL: $knownPersons. If you only see these authorized individuals, reply EXACTLY '[STATUS_SAFE]'. "
         } else ""
 
-        // CRITICAL FIX: The LLM will no longer default to searching for "UNKNOWN threat or unauthorized person". 
-        // It strictly respects the user's custom trigger condition.
+        // CRITICAL FIX: Prompt respects User custom triggers (e.g., "Trigger if you see a TV") instead of forcing "unknown threat".
         val enforcedPrompt = if (percentReq > 0) {
             "$basePrompt $personaRule Analyze the image based on the user's prompt. You must be at least $percentReq% confident to trigger an alert. If the user's conditions are NOT met, or there is nothing of interest, reply EXACTLY '[STATUS_SAFE]'."
         } else {
