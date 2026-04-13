@@ -1,6 +1,7 @@
 package com.securecam.ui.screens
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +24,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import com.google.gson.Gson
+import com.securecam.core.network.LocalSignalingClient
 import com.securecam.core.webrtc.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,13 +53,20 @@ fun ViewerScreen(navController: NavController) {
     LaunchedEffect(Unit) { if (!hasMicPermission) permLauncher.launch(Manifest.permission.RECORD_AUDIO) }
 
     val remoteRenderer = remember { SurfaceViewRenderer(context) }
-    var signalClient by remember { mutableStateOf<FirebaseSignalingClient?>(null) }
     var streamStatus by remember { mutableStateOf("Initializing Viewport...") }
     val alertHistory = remember { mutableStateListOf<String>() }
     
     var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
     var localAudioTrack by remember { mutableStateOf<AudioTrack?>(null) }
     var isMicActive by remember { mutableStateOf(false) }
+    
+    val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+    val viewerMode = prefs.getString("viewer_mode", "Firebase")
+    val securityToken = prefs.getString("security_token", "") ?: ""
+
+    // Hold onto signalers so we can use them in the UI buttons
+    var fbClient: FirebaseSignalingClient? = null
+    var localClient: LocalSignalingClient? = null
 
     fun sendCommand(cmd: String) {
         dataChannel?.let { dc ->
@@ -70,15 +79,15 @@ fun ViewerScreen(navController: NavController) {
 
     DisposableEffect(Unit) {
         val rtcManager = WebRTCManager(context).apply { initRenderer(remoteRenderer) }
-        signalClient = FirebaseSignalingClient(context, "VIEWER")
-
-        signalClient?.onConnected = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Firebase Connected. Ready to Join!" } }
         
         val observer = object : SimplePeerConnectionObserver() {
             override fun onIceCandidate(candidate: IceCandidate?) {
                 candidate?.let {
-                    val json = Gson().toJson(IceCandidateData(it.sdpMid, it.sdpMLineIndex, it.sdp))
-                    signalClient?.sendSignal("ICE", json)
+                    if (viewerMode == "Local WiFi") {
+                        localClient?.send(Gson().toJson(mapOf("type" to "ICE", "sdpMid" to it.sdpMid, "sdpMLineIndex" to it.sdpMLineIndex, "sdp" to it.sdp)))
+                    } else {
+                        fbClient?.sendSignal("ICE", Gson().toJson(IceCandidateData(it.sdpMid, it.sdpMLineIndex, it.sdp)))
+                    }
                 }
             }
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
@@ -96,7 +105,6 @@ fun ViewerScreen(navController: NavController) {
                             byteBuffer.get(bytes)
                             val text = String(bytes, Charsets.UTF_8)
                             val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                            
                             CoroutineScope(Dispatchers.Main).launch {
                                 alertHistory.add(0, "[$timeStr] $text")
                                 if (alertHistory.size > 50) alertHistory.removeLast()
@@ -113,31 +121,55 @@ fun ViewerScreen(navController: NavController) {
         localAudioTrack?.setEnabled(false)
         localAudioTrack?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
 
-        signalClient?.onOfferReceived = { sdpStr -> 
+        fun processOffer(sdpStr: String) {
             CoroutineScope(Dispatchers.Main).launch { streamStatus = "Offer Received! Routing ICE..." }
-            val data = Gson().fromJson(sdpStr, SdpData::class.java)
-            val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(data.type), data.sdp)
+            val sdpMap = Gson().fromJson(sdpStr, Map::class.java)
+            val sdpType = sdpMap["typeSDP"] as? String ?: sdpMap["type"] as String
+            val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(sdpType), sdpMap["sdp"] as String)
             peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
             
             peerConnection?.createAnswer(object : SimpleSdpObserver() {
                 override fun onCreateSuccess(sdp: SessionDescription?) {
                     sdp?.let {
                         peerConnection.setLocalDescription(SimpleSdpObserver(), it)
-                        val json = Gson().toJson(SdpData(it.type.canonicalForm(), it.description))
-                        signalClient?.sendSignal("ANSWER", json)
+                        if (viewerMode == "Local WiFi") {
+                            localClient?.send(Gson().toJson(mapOf("type" to "ANSWER", "typeSDP" to it.type.canonicalForm(), "sdp" to it.description)))
+                        } else {
+                            fbClient?.sendSignal("ANSWER", Gson().toJson(SdpData(it.type.canonicalForm(), it.description)))
+                        }
                     }
                 }
             }, MediaConstraints())
             CoroutineScope(Dispatchers.Main).launch { streamStatus = "LIVE STREAM ACTIVE" }
         }
 
-        signalClient?.onIceCandidateReceived = { iceStr ->
-            val data = Gson().fromJson(iceStr, IceCandidateData::class.java)
-            peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp))
+        if (viewerMode == "Local WiFi") {
+            val ip = prefs.getString("target_ip", "") ?: ""
+            CoroutineScope(Dispatchers.Main).launch { streamStatus = "Connecting to Local IP: $ip..." }
+            localClient = LocalSignalingClient(ip, 8081, securityToken)
+            localClient?.onConnected = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Connected to Camera socket!" } }
+            localClient?.onError = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "ERROR: $it" } }
+            localClient?.onMessageReceived = { jsonStr ->
+                val map = Gson().fromJson(jsonStr, Map::class.java)
+                when (map["type"]) {
+                    "OFFER" -> processOffer(jsonStr)
+                    "ICE" -> peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String))
+                }
+            }
+            localClient?.connect()
+        } else {
+            fbClient = FirebaseSignalingClient(context, "VIEWER")
+            fbClient?.onConnected = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Firebase Connected. Ready to Join!" } }
+            fbClient?.onOfferReceived = { processOffer(it) }
+            fbClient?.onIceCandidateReceived = { iceStr ->
+                val data = Gson().fromJson(iceStr, IceCandidateData::class.java)
+                peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp))
+            }
         }
 
         onDispose {
             try { remoteRenderer.release() } catch(e: Exception){}
+            localClient?.disconnect()
             peerConnection?.dispose()
             rtcManager.dispose()
         }
@@ -146,7 +178,7 @@ fun ViewerScreen(navController: NavController) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Remote WebRTC Viewer") },
+                title = { Text("WebRTC Viewer ($viewerMode)") },
                 navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }
             )
         }
@@ -174,65 +206,50 @@ fun ViewerScreen(navController: NavController) {
                         }
                     }
                 }
-                
                 Spacer(modifier = Modifier.height(160.dp)) 
             }
 
             Column(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).fillMaxWidth()) {
                 if (streamStatus != "LIVE STREAM ACTIVE") {
                     Button(
-                        onClick = { signalClient?.sendSignal("JOIN") },
+                        onClick = { 
+                            if (viewerMode == "Local WiFi") {
+                                localClient?.send(Gson().toJson(mapOf("type" to "JOIN")))
+                            } else {
+                                fbClient?.sendSignal("JOIN") 
+                            }
+                        },
                         modifier = Modifier.padding(horizontal = 32.dp).fillMaxWidth()
                     ) {
                         Text("JOIN STREAM")
                     }
                 } else {
-                    // --- UI REDESIGN: Circular Icon Buttons ---
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
                         Button(
                             onClick = { sendCommand("CMD_SIREN") }, 
-                            shape = CircleShape,
-                            modifier = Modifier.size(64.dp),
-                            contentPadding = PaddingValues(0.dp),
+                            shape = CircleShape, modifier = Modifier.size(64.dp), contentPadding = PaddingValues(0.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
-                        ) {
-                            Text("🚨", fontSize = 28.sp)
-                        }
+                        ) { Text("🚨", fontSize = 28.sp) }
                         Button(
                             onClick = { sendCommand("CMD_FLASH") }, 
-                            shape = CircleShape,
-                            modifier = Modifier.size(64.dp),
-                            contentPadding = PaddingValues(0.dp),
+                            shape = CircleShape, modifier = Modifier.size(64.dp), contentPadding = PaddingValues(0.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF512DA8))
-                        ) {
-                            Text("🔦", fontSize = 28.sp)
-                        }
+                        ) { Text("🔦", fontSize = 28.sp) }
                         Button(
                             onClick = { sendCommand("CMD_SWITCH_CAM") }, 
-                            shape = CircleShape,
-                            modifier = Modifier.size(64.dp),
-                            contentPadding = PaddingValues(0.dp),
+                            shape = CircleShape, modifier = Modifier.size(64.dp), contentPadding = PaddingValues(0.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
-                        ) {
-                            Text("🔄", fontSize = 28.sp)
-                        }
+                        ) { Text("🔄", fontSize = 28.sp) }
                         Button(
                             onClick = { sendCommand("CMD_FORCE_SCAN") }, 
-                            shape = CircleShape,
-                            modifier = Modifier.size(64.dp),
-                            contentPadding = PaddingValues(0.dp),
+                            shape = CircleShape, modifier = Modifier.size(64.dp), contentPadding = PaddingValues(0.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF388E3C))
-                        ) {
-                            Text("🔍", fontSize = 28.sp)
-                        }
+                        ) { Text("🔍", fontSize = 28.sp) }
                     }
-                    
                     Spacer(modifier = Modifier.height(8.dp))
-                    
-                    // --- UI REDESIGN: Large Pill Button ---
                     Button(
                         onClick = { 
                             isMicActive = !isMicActive
@@ -244,8 +261,7 @@ fun ViewerScreen(navController: NavController) {
                     ) {
                         Text(
                             text = if (isMicActive) "🎤 MIC ACTIVE (Tap to Mute)" else "🔇 PUSH TO TALK",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
+                            fontSize = 18.sp, fontWeight = FontWeight.Bold
                         )
                     }
                 }
