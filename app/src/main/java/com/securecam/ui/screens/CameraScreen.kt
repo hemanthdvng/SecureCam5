@@ -123,10 +123,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     tts?.setSpeechRate(1.2f)
                 }
             }
-            
-            // CRITICAL FIX: Keep the screen awake! If the screen sleeps, WebRTC freezes and starves the AI of frames.
             activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            
             onDispose { 
                 tts?.shutdown() 
                 activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -247,6 +244,24 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                         val bytes = ByteArray(byteBuffer.remaining())
                         byteBuffer.get(bytes)
                         val command = String(bytes, Charsets.UTF_8)
+                        
+                        try {
+                            val map = Gson().fromJson(command, Map::class.java)
+                            if (map["type"] == "SYNC_SETTINGS") {
+                                prefs.edit().apply {
+                                    putFloat("scan_interval_sec", (map["scan_interval_sec"] as Double).toFloat())
+                                    putFloat("confidence_threshold", (map["confidence_threshold"] as Double).toFloat())
+                                    putString("prompt_sys", map["prompt_sys"] as? String ?: "")
+                                    putString("prompt_usr", map["prompt_usr"] as? String ?: "")
+                                    putBoolean("llm_enabled", map["llm_enabled"] as? Boolean ?: true)
+                                    putBoolean("face_recog_enabled", map["face_recog_enabled"] as? Boolean ?: true)
+                                }.apply()
+                                CoroutineScope(Dispatchers.Main).launch {
+                                    alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer successfully.")
+                                }
+                                return
+                            }
+                        } catch (e: Exception) {}
                         
                         CoroutineScope(Dispatchers.Main).launch {
                             when (command) {
