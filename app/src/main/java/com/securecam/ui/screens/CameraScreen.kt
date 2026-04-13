@@ -27,6 +27,7 @@ import androidx.lifecycle.ViewModel
 import androidx.navigation.NavController
 import com.google.gson.Gson
 import com.securecam.core.ai.HybridAIPipeline
+import com.securecam.core.network.DvrEngine
 import com.securecam.core.network.LocalSignalingServer
 import com.securecam.core.network.MjpegServer
 import com.securecam.core.webrtc.*
@@ -103,13 +104,17 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         var isScreaming by remember { mutableStateOf(false) }
         var tts: TextToSpeech? by remember { mutableStateOf(null) }
         
-        val mjpegServer = remember { MjpegServer() }
+        val mjpegServer = remember { MjpegServer(context) }
+        val dvrEngine = remember { DvrEngine(context) }
         val ipAddress = remember { getLocalIpAddress() }
 
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val scanIntervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
         val securityToken = remember { prefs.getString("security_token", "") ?: "" }
         val localServer = remember { LocalSignalingServer(8081, securityToken) }
+
+        // HIGH-SPEED ATOMIC BUFFER
+        val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
 
         DisposableEffect(Unit) {
             tts = TextToSpeech(context) { status ->
@@ -142,14 +147,30 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
+        // --- LOOP 1: HIGH-SPEED DVR BUFFER (5 FPS) ---
+        LaunchedEffect(Unit) {
+            while(isActive) {
+                localRenderer.addFrameListener({ bitmap ->
+                    val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    mjpegServer.updateFrame(bmpCopy)
+                    dvrEngine.appendFrame(bmpCopy)
+                    val old = latestBitmapRef.getAndSet(bmpCopy)
+                    old?.recycle()
+                }, 0.5f)
+                delay(200)
+            }
+        }
+
+        // --- LOOP 2: LOW-SPEED AI POLLING ---
         LaunchedEffect(forceScanTrigger) {
             while(isActive) {
                 delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
-                localRenderer.addFrameListener({ bitmap ->
-                    val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                    viewModel.aiPipeline.processFrame(bmpCopy)
-                    mjpegServer.updateFrame(bmpCopy)
-                }, 0.5f)
+                latestBitmapRef.get()?.let { bmp ->
+                    if (!bmp.isRecycled) {
+                        val copy = bmp.copy(Bitmap.Config.ARGB_8888, false)
+                        viewModel.aiPipeline.processFrame(copy)
+                    }
+                }
                 if (forceScanTrigger > 0) forceScanTrigger = 0
             }
         }
@@ -162,9 +183,14 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 alertHistory.add(0, "[$timeStr] $text")
                 if (alertHistory.size > 50) alertHistory.removeLast()
                 
-                // TCP Broadcast fixes the dropped UDP packets and wakes up the background AlertService!
-                localServer.broadcast(Gson().toJson(mapOf("type" to "ALERT", "text" to text)))
+                val isSafe = text.contains("CLEAR") || text.contains("[STATUS_SAFE]")
                 
+                // TRIGGER AUTO-RECORDING
+                if (!isSafe) {
+                    dvrEngine.triggerRecording()
+                }
+
+                localServer.broadcast(Gson().toJson(mapOf("type" to "ALERT", "text" to text)))
                 dataChannel?.let { dc ->
                     if (dc.state() == DataChannel.State.OPEN) {
                         val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8))
