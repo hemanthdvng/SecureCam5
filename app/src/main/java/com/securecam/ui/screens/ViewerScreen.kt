@@ -49,7 +49,6 @@ import java.util.Locale
 fun ViewerScreen(navController: NavController) {
     val context = LocalContext.current
     
-    // SAFEGUARD: Wait for mic permissions before booting WebRTC UI
     var hasMicPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasMicPerm = it }
     LaunchedEffect(Unit) { if (!hasMicPerm) permLauncher.launch(Manifest.permission.RECORD_AUDIO) }
@@ -156,6 +155,15 @@ fun ViewerScreen(navController: NavController) {
                     when (map["type"]) {
                         "OFFER" -> processOffer(jsonStr)
                         "ICE" -> peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String))
+                        "ALERT" -> {
+                            // Catch the TCP log directly to ensure it doesn't get dropped by UDP WebRTC DataChannels!
+                            val text = map["text"] as? String ?: ""
+                            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                            CoroutineScope(Dispatchers.Main).launch {
+                                alertHistory.add(0, "[$timeStr] $text")
+                                if (alertHistory.size > 50) alertHistory.removeLast()
+                            }
+                        }
                     }
                 }
                 localClient?.connect()
@@ -271,7 +279,6 @@ fun ViewerScreen(navController: NavController) {
             }
         }
     } else {
-        // SAFEGUARD UI
         Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
             Text("Waiting for Microphone Permission...", color = Color.White)
         }
