@@ -10,16 +10,20 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -64,6 +68,11 @@ class SettingsViewModel @Inject constructor(
         private set
     var currentModelName by mutableStateOf("None")
 
+    // CRITICAL FIX: Added UI Draft States so user can confirm crop and type the name
+    var draftCroppedBitmap by mutableStateOf<Bitmap?>(null)
+        private set
+    var draftFaceName by mutableStateOf("")
+
     private val _registeredFaces = MutableStateFlow<List<RegisteredFace>>(emptyList())
     val registeredFaces = _registeredFaces.asStateFlow()
 
@@ -76,7 +85,6 @@ class SettingsViewModel @Inject constructor(
             val type = object : TypeToken<List<RegisteredFace>>() {}.type
             _registeredFaces.value = Gson().fromJson(json, type) ?: emptyList()
         } catch (e: Exception) {
-            // FIX: Cleans up corrupted data from older versions to prevent crash loops
             prefs.edit().remove("authorized_faces").apply()
             _registeredFaces.value = emptyList()
         }
@@ -152,27 +160,56 @@ class SettingsViewModel @Inject constructor(
 
                 val croppedBmp = Bitmap.createBitmap(bmp, left, top, w, h)
 
+                // Render Dialog on Main Thread
+                withContext(Dispatchers.Main) {
+                    draftCroppedBitmap = croppedBmp
+                    draftFaceName = "Face ${registeredFaces.value.size + 1}"
+                }
+            } catch(e: Exception) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+
+    fun confirmFaceRegistration(context: Context) {
+        val bmp = draftCroppedBitmap ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) { Toast.makeText(context, "Saving...", Toast.LENGTH_SHORT).show() }
+            try {
                 val biometricEngine = BiometricEngine(context)
                 biometricEngine.initialize()
-                val embedding = biometricEngine.getFaceEmbedding(croppedBmp)
+                val embedding = biometricEngine.getFaceEmbedding(bmp)
                 biometricEngine.close()
 
                 if (embedding != null) {
-                    val newFace = RegisteredFace(UUID.randomUUID().toString(), "Face ${registeredFaces.value.size + 1}", embedding)
+                    val newFace = RegisteredFace(UUID.randomUUID().toString(), draftFaceName, embedding)
                     val updatedList = registeredFaces.value + newFace
                     
                     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                     prefs.edit().putString("authorized_faces", Gson().toJson(updatedList)).apply()
                     _registeredFaces.value = updatedList
                     
-                    withContext(Dispatchers.Main) { Toast.makeText(context, "Face added successfully!", Toast.LENGTH_SHORT).show() }
+                    withContext(Dispatchers.Main) { 
+                        Toast.makeText(context, "Face added successfully!", Toast.LENGTH_SHORT).show() 
+                        draftCroppedBitmap = null
+                    }
                 } else {
-                    withContext(Dispatchers.Main) { Toast.makeText(context, "Could not extract features.", Toast.LENGTH_SHORT).show() }
+                    withContext(Dispatchers.Main) { 
+                        Toast.makeText(context, "Could not extract features.", Toast.LENGTH_SHORT).show() 
+                        draftCroppedBitmap = null
+                    }
                 }
             } catch(e: Exception) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show() }
+                withContext(Dispatchers.Main) { 
+                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show() 
+                    draftCroppedBitmap = null
+                }
             }
         }
+    }
+
+    fun cancelFaceRegistration() {
+        draftCroppedBitmap = null
     }
 }
 
@@ -197,11 +234,8 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     
     var viewerMode by remember { mutableStateOf(prefs.getString("viewer_mode", "Firebase") ?: "Firebase") }
     var targetIp by remember { mutableStateOf(prefs.getString("target_ip", "") ?: "") }
-    
-    // FIX: Bounds enforcement prevents Sliders from crashing Compose Engine
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f).coerceIn(0.0f, 1.0f)) }
-    
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", true)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
     var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
@@ -220,6 +254,37 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     }
     
     LaunchedEffect(Unit) { viewModel.loadPrefs(context) }
+
+    // Dialog Trigger
+    if (viewModel.draftCroppedBitmap != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelFaceRegistration() },
+            title = { Text("Confirm & Name Face") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                    Image(
+                        bitmap = viewModel.draftCroppedBitmap!!.asImageBitmap(),
+                        contentDescription = "Cropped Face",
+                        modifier = Modifier.size(150.dp).clip(CircleShape)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = viewModel.draftFaceName,
+                        onValueChange = { viewModel.draftFaceName = it },
+                        label = { Text("Person's Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = { viewModel.confirmFaceRegistration(context) }) { Text("Save Face") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelFaceRegistration() }) { Text("Cancel") }
+            }
+        )
+    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }) }
