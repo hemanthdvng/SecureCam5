@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.AudioManager
-import android.net.wifi.WifiManager
 import android.speech.tts.TextToSpeech
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -56,11 +55,22 @@ class CameraViewModel @Inject constructor(
     val eventRepository: EventRepository
 ) : ViewModel()
 
-fun getLocalIpAddress(context: Context): String {
-    val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-    val ip = wifiManager.connectionInfo.ipAddress
-    if (ip == 0) return "No WiFi"
-    return String.format(Locale.US, "%d.%d.%d.%d", (ip and 0xff), (ip shr 8 and 0xff), (ip shr 16 and 0xff), (ip shr 24 and 0xff))
+// FIX 3: Rip out WifiManager entirely and use standard Java Networking to prevent SecurityException crashes
+fun getLocalIpAddress(): String {
+    try {
+        val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+        while (interfaces.hasMoreElements()) {
+            val intf = interfaces.nextElement()
+            val addrs = intf.inetAddresses
+            while (addrs.hasMoreElements()) {
+                val addr = addrs.nextElement()
+                if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                    return addr.hostAddress ?: "No IP"
+                }
+            }
+        }
+    } catch (e: Exception) {}
+    return "No WiFi"
 }
 
 @Composable
@@ -68,7 +78,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
     val context = LocalContext.current
     val activity = context as? android.app.Activity
     
-    // SAFEGUARD: Request both hardware permissions before booting
     var hasCamPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     var hasMicPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
 
@@ -84,7 +93,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         if (reqs.isNotEmpty()) permLauncher.launch(reqs.toTypedArray())
     }
 
-    // Wrap the entire hardware execution engine in a permission lock
     if (hasCamPerm && hasMicPerm) {
         val localRenderer = remember { SurfaceViewRenderer(context) }
         var streamStatus by remember { mutableStateOf("Initializing Hardware...") }
@@ -97,7 +105,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         var tts: TextToSpeech? by remember { mutableStateOf(null) }
         
         val mjpegServer = remember { MjpegServer() }
-        val ipAddress = remember { getLocalIpAddress(context) }
+        val ipAddress = remember { getLocalIpAddress() }
 
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val scanIntervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
@@ -314,7 +322,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
     } else {
-        // SAFEGUARD UI: Wait here until Android returns permission success
         Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
             Text("Waiting for Camera & Microphone Permissions...", color = Color.White)
         }
