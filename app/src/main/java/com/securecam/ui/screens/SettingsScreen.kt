@@ -68,6 +68,8 @@ class SettingsViewModel @Inject constructor(
     
     var isImporting by mutableStateOf(false)
         private set
+    var isDownloading by mutableStateOf(false)
+        private set
     var currentModelName by mutableStateOf("None")
 
     var draftCroppedBitmap by mutableStateOf<Bitmap?>(null)
@@ -99,6 +101,57 @@ class SettingsViewModel @Inject constructor(
         _registeredFaces.value = updated
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("authorized_faces", Gson().toJson(updated)).apply()
+    }
+
+    fun importModel(uri: Uri, context: Context) {
+        isImporting = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var fileName = "custom_model.litertlm"
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) fileName = cursor.getString(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME) ?: 0)
+                }
+                val destFile = File(context.filesDir, fileName)
+                context.contentResolver.openInputStream(uri)?.use { input -> destFile.outputStream().use { output -> input.copyTo(output) } }
+                context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
+                currentModelName = fileName
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Model $fileName Loaded!", Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Import Failed: ${e.message}", Toast.LENGTH_LONG).show() }
+            } finally { isImporting = false }
+        }
+    }
+
+    // CRITICAL FIX: Direct HuggingFace Model Downloader
+    fun downloadCloudModel(context: Context) {
+        isDownloading = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Downloading Cloud Model (This may take a while)...", Toast.LENGTH_LONG).show() }
+                val urlStr = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
+                val url = java.net.URL(urlStr)
+                val connection = url.openConnection() as java.net.HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connect()
+
+                if (connection.responseCode == java.net.HttpURLConnection.HTTP_OK) {
+                    val fileName = "gemma-4-E2B-it.litertlm"
+                    val destFile = File(context.filesDir, fileName)
+                    connection.inputStream.use { input ->
+                        destFile.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
+                    currentModelName = fileName
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Cloud Model Downloaded & Loaded!", Toast.LENGTH_LONG).show() }
+                } else {
+                    throw Exception("HTTP ${connection.responseCode}")
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Download Failed: ${e.message}", Toast.LENGTH_LONG).show() }
+            } finally {
+                isDownloading = false
+            }
+        }
     }
 
     fun syncToCamera(context: Context, ip: String, token: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
@@ -214,7 +267,12 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var appRole by remember { mutableStateOf(prefs.getString("app_role", "Camera") ?: "Camera") }
     var roleExpanded by remember { mutableStateOf(false) }
     
+    // CRITICAL FIX: Restore missing state variables to fix Compiler Error
     var targetIp by remember { mutableStateOf(prefs.getString("target_ip", "") ?: "") }
+    var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
+    var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
+    var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
+    
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.60f).coerceIn(0.0f, 1.0f)) }
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", false)) }
@@ -304,7 +362,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Auth Token") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
-            // RESTORED UI DESCRIPTIONS
             if (viewerMode == "Local WiFi") {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world. This keeps your stream direct and private without needing third-party cloud servers.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -369,10 +426,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt (Custom Trigger)") }, modifier = Modifier.fillMaxWidth())
 
-            // EXPLICIT LLM UPLOAD BUTTON
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
+            
+            // CRITICAL FIX: Restored LLM Upload and Added HuggingFace Downloader
             Text("Local LLM Model", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Current model loaded: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -380,12 +438,20 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Button(
                 onClick = { filePicker.launch(arrayOf("*/*")) }, 
                 modifier = Modifier.fillMaxWidth(), 
-                enabled = !viewModel.isImporting,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                enabled = !viewModel.isImporting && !viewModel.isDownloading
             ) { 
-                Text(if (viewModel.isImporting) "Loading Model into Vault..." else "Select New Model (.litertlm)") 
+                Text(if (viewModel.isImporting) "Loading Local Model..." else "📁 Import Model from Device (.litertlm)") 
             }
-            
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = { viewModel.downloadCloudModel(context) }, 
+                modifier = Modifier.fillMaxWidth(), 
+                enabled = !viewModel.isImporting && !viewModel.isDownloading,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
+            ) { 
+                Text(if (viewModel.isDownloading) "Downloading Cloud Model (Please Wait)..." else "☁️ Download Gemma-4-E2B Cloud Model") 
+            }
+
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
