@@ -10,27 +10,16 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class SecurityEvent(
-    val type: String,
-    val description: String,
-    val confidence: Float
-)
+data class SecurityEvent(val type: String, val description: String, val confidence: Float, val videoPath: String? = null)
 
 @Singleton
-class EventRepository @Inject constructor(
-    private val logDao: LogDao
-) {
+class EventRepository @Inject constructor(private val logDao: LogDao) {
     private val _securityEvents = MutableSharedFlow<SecurityEvent>(replay = 1)
     val securityEvents = _securityEvents.asSharedFlow()
 
     suspend fun emitEvent(event: SecurityEvent) {
         _securityEvents.emit(event)
-        
-        val isSafe = event.description.contains("CLEAR", ignoreCase = true) || 
-                     event.description.contains("[STATUS_SAFE]", ignoreCase = true) || 
-                     event.description.contains("[SYSTEM]", ignoreCase = true)
-                     
-        if (!isSafe) {
+        if (!event.description.contains("[SYSTEM]", ignoreCase = true)) {
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     logDao.insertLog(
@@ -38,7 +27,8 @@ class EventRepository @Inject constructor(
                             logTime = System.currentTimeMillis(),
                             type = event.type,
                             description = event.description,
-                            confidence = event.confidence
+                            confidence = event.confidence,
+                            videoPath = event.videoPath
                         )
                     )
                 } catch (e: Exception) {}
