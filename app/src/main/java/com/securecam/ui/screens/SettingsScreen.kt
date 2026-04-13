@@ -81,7 +81,15 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     val clipboardManager = LocalClipboardManager.current
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     
-    var securityToken by remember { mutableStateOf(prefs.getString("security_token", "") ?: "") }
+    // FIX: Move UUID generation inside the remember block so Compose doesn't swallow the state mutation during render
+    var securityToken by remember { 
+        mutableStateOf(
+            prefs.getString("security_token", "").takeIf { !it.isNullOrBlank() } ?: UUID.randomUUID().toString().substring(0, 8).also {
+                prefs.edit().putString("security_token", it).apply()
+            }
+        )
+    }
+    
     var viewerMode by remember { mutableStateOf(prefs.getString("viewer_mode", "Firebase") ?: "Firebase") }
     var targetIp by remember { mutableStateOf(prefs.getString("target_ip", "") ?: "") }
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f)) }
@@ -94,7 +102,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
     var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
     var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
-    
     var knownPersons by remember { mutableStateOf(prefs.getString("known_persons", "") ?: "") }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { viewModel.importModel(it, context) } }
