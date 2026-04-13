@@ -1,5 +1,9 @@
 package com.securecam.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,12 +16,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import com.google.gson.Gson
 import com.securecam.core.webrtc.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
@@ -27,6 +33,7 @@ import org.webrtc.RtpReceiver
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -35,10 +42,28 @@ import java.util.Locale
 @Composable
 fun ViewerScreen(navController: NavController) {
     val context = LocalContext.current
+    var hasMicPermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasMicPermission = it }
+    LaunchedEffect(Unit) { if (!hasMicPermission) permLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+
     val remoteRenderer = remember { SurfaceViewRenderer(context) }
     var signalClient by remember { mutableStateOf<FirebaseSignalingClient?>(null) }
     var streamStatus by remember { mutableStateOf("Initializing Viewport...") }
     val alertHistory = remember { mutableStateListOf<String>() }
+    
+    // Command Center State
+    var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
+    var localAudioTrack by remember { mutableStateOf<AudioTrack?>(null) }
+    var isMicActive by remember { mutableStateOf(false) }
+
+    fun sendCommand(cmd: String) {
+        dataChannel?.let { dc ->
+            if (dc.state() == DataChannel.State.OPEN) {
+                val buffer = ByteBuffer.wrap(cmd.toByteArray(Charsets.UTF_8))
+                dc.send(DataChannel.Buffer(buffer, false))
+            }
+        }
+    }
 
     DisposableEffect(Unit) {
         val rtcManager = WebRTCManager(context).apply { initRenderer(remoteRenderer) }
@@ -58,6 +83,7 @@ fun ViewerScreen(navController: NavController) {
                 track?.addSink(remoteRenderer)
             }
             override fun onDataChannel(dc: DataChannel?) {
+                dataChannel = dc // Save reference so UI can send commands back
                 dc?.registerObserver(object : DataChannel.Observer {
                     override fun onBufferedAmountChange(p0: Long) {}
                     override fun onStateChange() {}
@@ -79,6 +105,11 @@ fun ViewerScreen(navController: NavController) {
         }
         
         val peerConnection = rtcManager.createPeerConnection(observer)
+        
+        // Initialize Audio (Muted by default to prevent echoes)
+        localAudioTrack = rtcManager.createLocalAudioTrack()
+        localAudioTrack?.setEnabled(false)
+        localAudioTrack?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
 
         signalClient?.onOfferReceived = { sdpStr -> 
             CoroutineScope(Dispatchers.Main).launch { streamStatus = "Offer Received! Routing ICE..." }
@@ -130,7 +161,7 @@ fun ViewerScreen(navController: NavController) {
                 
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     items(alertHistory) { alert ->
-                        val isSafe = alert.contains("CLEAR")
+                        val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]")
                         val bgColor = if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
                         Card(
                             colors = CardDefaults.cardColors(containerColor = bgColor),
@@ -141,17 +172,44 @@ fun ViewerScreen(navController: NavController) {
                     }
                 }
                 
-                Spacer(modifier = Modifier.height(72.dp))
+                Spacer(modifier = Modifier.height(160.dp)) // Leave room for controls
             }
 
-            Button(
-                onClick = { 
-                    streamStatus = "Sending JOIN signal..."
-                    signalClient?.sendSignal("JOIN") 
-                },
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)
-            ) {
-                Text("Join Stream")
+            // --- COMMAND CENTER UI ---
+            Column(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).fillMaxWidth()) {
+                if (streamStatus != "LIVE STREAM ACTIVE") {
+                    Button(
+                        onClick = { signalClient?.sendSignal("JOIN") },
+                        modifier = Modifier.padding(horizontal = 32.dp).fillMaxWidth()
+                    ) {
+                        Text("JOIN STREAM")
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        Button(onClick = { sendCommand("CMD_SIREN") }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))) {
+                            Text("🚨 Siren")
+                        }
+                        Button(onClick = { sendCommand("CMD_SWITCH_CAM") }) {
+                            Text("🔄 Flip Cam")
+                        }
+                        Button(onClick = { sendCommand("CMD_FORCE_SCAN") }) {
+                            Text("🔍 Scan")
+                        }
+                    }
+                    Button(
+                        onClick = { 
+                            isMicActive = !isMicActive
+                            localAudioTrack?.setEnabled(isMicActive)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isMicActive) Color(0xFF388E3C) else Color(0xFF616161)),
+                        modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(56.dp)
+                    ) {
+                        Text(if (isMicActive) "🎤 MIC ACTIVE (Tap to Mute)" else "🔇 PUSH TO TALK")
+                    }
+                }
             }
         }
     }
