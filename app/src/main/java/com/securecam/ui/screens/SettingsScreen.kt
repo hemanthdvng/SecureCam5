@@ -55,6 +55,7 @@ import kotlin.math.roundToInt
 import java.util.UUID
 import javax.inject.Inject
 
+// CRITICAL FIX: Removed complex dependencies to fix the Unresolved Reference compiler errors
 @HiltViewModel
 class SettingsViewModel @Inject constructor() : ViewModel() {
     
@@ -254,15 +255,18 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var roleExpanded by remember { mutableStateOf(false) }
     
     var targetIp by remember { mutableStateOf(prefs.getString("target_ip", "") ?: "") }
-    
-    // CRITICAL BUG 3 FIX: Settings now bind perfectly to SharedPreferences
-    var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
-    var faceRecogEnabled by remember { mutableStateOf(prefs.getBoolean("face_recog_enabled", false)) }
+    var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
+    var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
+    var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
     
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.60f).coerceIn(0.0f, 1.0f)) }
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", false)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
+    
+    // CRITICAL FIX: The Settings UI now directly reads and writes the AI toggles to SharedPreferences
+    var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
+    var faceRecogEnabled by remember { mutableStateOf(prefs.getBoolean("face_recog_enabled", false)) }
     
     var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are an AI security camera. Answer the user's prompt based ONLY on the image provided.") ?: "") }
     var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Report if you see any clock.") ?: "") }
@@ -348,13 +352,23 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Auth Token") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
+            if (viewerMode == "Local WiFi") {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else if (viewerMode == "Firebase") {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth())
+            }
+            
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Upload a photo. The AI will auto-crop the face. Faces are NOT synced remotely, they must be added directly to the Camera device.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Upload a photo. The AI will auto-crop the face. Faces are NOT synced remotely.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
             Button(onClick = { photoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("📸 Upload Face Photo") }
             if (faces.isNotEmpty()) {
