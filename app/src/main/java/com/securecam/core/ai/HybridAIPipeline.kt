@@ -32,7 +32,6 @@ class HybridAIPipeline @Inject constructor(
     private var isLlmEnabledSetting = true
     private var isFaceRecogEnabledSetting = true
     
-    // Heartbeat monitor flag
     private var firstFrameReceived = false
 
     init { 
@@ -81,7 +80,6 @@ class HybridAIPipeline @Inject constructor(
     fun processFrame(bitmap: Bitmap) {
         aiScope.launch {
             try {
-                // CRITICAL FIX: Logs the first frame receipt so the user visually knows the camera loop is not frozen
                 if (!firstFrameReceived) {
                     firstFrameReceived = true
                     eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Camera heartbeat established. AI is receiving live frames.", 1.0f))
@@ -165,20 +163,22 @@ class HybridAIPipeline @Inject constructor(
         val debugMode = prefs.getBoolean("debug_mode", true)
         val percentReq = (confThreshold * 100).toInt()
         
-        val basePrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
+        val basePrompt = prefs.getString("prompt_sys", "You are a visual analysis AI. Follow the user's trigger instructions exactly.") ?: ""
         val knownPersons = prefs.getString("known_persons", "") ?: ""
         
         val personaRule = if (knownPersons.isNotBlank()) {
             "AUTHORIZED PERSONNEL: $knownPersons. If you only see these authorized individuals, reply EXACTLY '[STATUS_SAFE]'. "
         } else ""
 
+        // CRITICAL FIX: The LLM will no longer default to searching for "UNKNOWN threat or unauthorized person". 
+        // It strictly respects the user's custom trigger condition.
         val enforcedPrompt = if (percentReq > 0) {
-            "$basePrompt $personaRule ONLY report if you are at least $percentReq% confident there is an UNKNOWN threat or unauthorized person. If there is no threat, or the image is dark, reply EXACTLY '[STATUS_SAFE]'."
+            "$basePrompt $personaRule Analyze the image based on the user's prompt. You must be at least $percentReq% confident to trigger an alert. If the user's conditions are NOT met, or there is nothing of interest, reply EXACTLY '[STATUS_SAFE]'."
         } else {
-            "$basePrompt $personaRule Describe EVERYTHING you see in the image. DO NOT output '[STATUS_SAFE]'."
+            "$basePrompt $personaRule Answer the user's prompt in detail. DO NOT output '[STATUS_SAFE]'."
         }
         
-        val usrPrompt = prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: ""
+        val usrPrompt = prefs.getString("prompt_usr", "Report if you see any people or a TV turned on.") ?: ""
 
         try {
             val result = withTimeoutOrNull(15000L) {
@@ -194,7 +194,7 @@ class HybridAIPipeline @Inject constructor(
                             
                             if (!isSafe || debugMode) {
                                 aiScope.launch {
-                                    val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Threat" else "🚨 $output"
+                                    val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Trigger found" else "🚨 $output"
                                     eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
                                     if (!isSafe) dispatchFirebaseAlert(output)
                                 }
