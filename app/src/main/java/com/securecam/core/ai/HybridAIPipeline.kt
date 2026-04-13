@@ -106,11 +106,17 @@ class HybridAIPipeline @Inject constructor(
         val percentReq = (confThreshold * 100).toInt()
         
         val basePrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
+        val knownPersons = prefs.getString("known_persons", "") ?: ""
         
+        val personaRule = if (knownPersons.isNotBlank()) {
+            "AUTHORIZED PERSONNEL: $knownPersons. If you only see these authorized individuals, reply EXACTLY '[STATUS_SAFE]'. "
+        } else ""
+
+        // FIX: Remove the [STATUS_SAFE] bypass if the user sets the threshold to 0%
         val enforcedPrompt = if (percentReq > 0) {
-            "$basePrompt ONLY report if you are at least $percentReq% confident there is an UNKNOWN threat or unauthorized person. If there is no threat, or the image is dark, reply EXACTLY '[STATUS_SAFE]'."
+            "$basePrompt $personaRule ONLY report if you are at least $percentReq% confident there is an UNKNOWN threat or unauthorized person. If there is no threat, or the image is dark, reply EXACTLY '[STATUS_SAFE]'."
         } else {
-            "$basePrompt If there is no threat, reply EXACTLY '[STATUS_SAFE]'."
+            "$basePrompt $personaRule Describe EVERYTHING you see in the image. DO NOT output '[STATUS_SAFE]'."
         }
         
         val usrPrompt = prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: ""
@@ -124,7 +130,13 @@ class HybridAIPipeline @Inject constructor(
                     onToken = { },
                     onDone = { text -> 
                         val output = text.trim()
-                        val isSafe = output.contains("[STATUS_SAFE]", ignoreCase = true) || output.contains("provide an image", ignoreCase = true)
+                        
+                        // FIX: Force an alert no matter what if the slider is at 0
+                        val isSafe = if (percentReq == 0) {
+                            false
+                        } else {
+                            output.contains("[STATUS_SAFE]", ignoreCase = true) || output.contains("provide an image", ignoreCase = true)
+                        }
                         
                         if (!isSafe || debugMode) {
                             aiScope.launch {
