@@ -28,9 +28,7 @@ class HybridAIPipeline @Inject constructor(
     private var isLlmInitialized = false
     private var isLlmEnabledSetting = true
 
-    init {
-        aiScope.launch { settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it } }
-    }
+    init { aiScope.launch { settingsRepository.isLlmEnabled.collect { isLlmEnabledSetting = it } } }
 
     fun start() {
         llmAnalyzer.initialize { result -> isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) }
@@ -68,7 +66,7 @@ class HybridAIPipeline @Inject constructor(
                     )
                     db.getReference("securecam/alerts").push().setValue(payload)
                 }
-            } catch (e: Exception) { Log.e(TAG, "Firebase Alert Error", e) }
+            } catch (e: Exception) {}
         }
     }
 
@@ -82,8 +80,6 @@ class HybridAIPipeline @Inject constructor(
         
         val basePrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
         
-        // BUG FIX: Change generic "CLEAR" to strict "[STATUS_SAFE]" token so the AI doesn't trigger it accidentally.
-        // BUG FIX: Tell the AI what to do if the screen is locked and the image is completely black.
         val enforcedPrompt = if (percentReq > 0) {
             "$basePrompt ONLY report if you are at least $percentReq% confident there is a distinct threat. If there is no threat, or if the image is completely dark/blank, reply EXACTLY '[STATUS_SAFE]'."
         } else {
@@ -101,8 +97,6 @@ class HybridAIPipeline @Inject constructor(
                     onToken = { },
                     onDone = { text -> 
                         val output = text.trim()
-                        
-                        // Catch our strict token OR the generic "provide an image" error string
                         val isSafe = output.contains("[STATUS_SAFE]", ignoreCase = true) || 
                                      output.contains("provide an image", ignoreCase = true) ||
                                      output.contains("provide a image", ignoreCase = true)
@@ -111,10 +105,7 @@ class HybridAIPipeline @Inject constructor(
                             aiScope.launch {
                                 val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Active Threats" else "🚨 $output"
                                 eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
-                                
-                                if (!isSafe) {
-                                    dispatchFirebaseAlert(output)
-                                }
+                                if (!isSafe) dispatchFirebaseAlert(output)
                             }
                         }
                         if (continuation.isActive) continuation.resume(Unit)
