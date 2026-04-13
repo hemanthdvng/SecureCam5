@@ -51,6 +51,7 @@ class SettingsViewModel @Inject constructor(
 
     fun processFaceRegistration(uri: Uri, context: Context, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) { Toast.makeText(context, "Initializing Model (May take a moment to download)...", Toast.LENGTH_LONG).show() }
             val biometricEngine = BiometricEngine(context)
             biometricEngine.initialize()
             try {
@@ -115,7 +116,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> 
         uri?.let { 
-            Toast.makeText(context, "Processing Biometrics...", Toast.LENGTH_SHORT).show()
             viewModel.processFaceRegistration(it, context) { success ->
                 hasRegisteredFace = success
             }
@@ -143,7 +143,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
-            // --- NATIVE BIOMETRIC REGISTRATION ---
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Upload a clear portrait of authorized personnel. The AI will extract their facial vector and store it entirely offline. If this face is detected, alarms are disabled.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
