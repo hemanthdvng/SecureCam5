@@ -33,17 +33,12 @@ class LlmVisionAnalyzer(private val context: Context) {
     }
 
     fun close() {
-        Log.d(TAG, "Queuing engine shutdown...")
-        // FIX 1: Queue the shutdown on the same thread as inference to prevent native SIGSEGV collisions
         llmScope.launch {
-            Log.d(TAG, "Safely closing LLM Engine and freeing hardware memory...")
             initialized.set(false)
             busy.set(false)
             try {
                 engine?.close()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing engine: ${e.message}")
-            } finally {
+            } catch (e: Exception) {} finally {
                 engine = null
             }
         }
@@ -66,15 +61,10 @@ class LlmVisionAnalyzer(private val context: Context) {
             try {
                 val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                 backendType = prefs.getString("ai_backend", "CPU") ?: "CPU"
-                
-                Log.d(TAG, "Booting Engine with Backend = $backendType on file: ${modelFile.name}")
 
                 val backendConfig = when (backendType) {
                     "GPU" -> Backend.GPU()
-                    "NPU" -> {
-                        Log.w(TAG, "Native NPU unsupported without QNN. Falling back to CPU.")
-                        Backend.CPU()
-                    }
+                    "NPU" -> Backend.CPU()
                     else -> Backend.CPU()
                 }
 
@@ -88,8 +78,7 @@ class LlmVisionAnalyzer(private val context: Context) {
                 engine = Engine(cfg).also { it.initialize() }
                 initialized.set(true)
                 withContext(Dispatchers.Main) { onResult(InitResult.Success) }
-            } catch (e: Exception) {
-                Log.e(TAG, "initialize() failed: ${e.message}")
+            } catch (e: Throwable) {
                 withContext(Dispatchers.Main) { 
                     onResult(InitResult.Error("Init failed ($backendType Error): ${e.message}")) 
                 }
@@ -106,7 +95,6 @@ class LlmVisionAnalyzer(private val context: Context) {
         onDone: (String) -> Unit,
         onError: (String) -> Unit
     ) {
-        // FIX 2: Explicitly trigger onError if rejected to prevent the pipeline from permanently deadlocking
         if (!initialized.get()) {
             bitmap.recycle()
             onError("Engine not initialized yet")
@@ -142,12 +130,12 @@ class LlmVisionAnalyzer(private val context: Context) {
                 withContext(Dispatchers.Main) { onDone(sb.toString().trim()) }
                 conversation.close()
 
-            } catch (e: Exception) {
-                Log.e(TAG, "Inference error", e)
-                withContext(Dispatchers.Main) { onError(e.message ?: "Inference error") }
+            // CRITICAL FIX: Broadened catch block to Throwable to ensure native crashes are sent to the UI
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) { onError(e.message ?: "Native Inference Fatal Error") }
             } finally {
                 busy.set(false)
-                bitmap.recycle() 
+                if (!bitmap.isRecycled) bitmap.recycle() 
             }
         }
     }
