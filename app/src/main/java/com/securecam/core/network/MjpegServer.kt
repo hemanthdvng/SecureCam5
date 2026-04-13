@@ -5,6 +5,7 @@ import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
 import java.io.InputStreamReader
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 
 class MjpegServer {
@@ -19,10 +20,15 @@ class MjpegServer {
     }
 
     fun start(port: Int = 8080, requiredToken: String) {
+        if (isRunning) return
         isRunning = true
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                serverSocket = ServerSocket(port)
+                // FIX 2: Enable reuseAddress so rapid exits/enters don't crash with BindException
+                serverSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(port))
+                }
                 while (isRunning) {
                     val client = serverSocket?.accept()
                     launch {
