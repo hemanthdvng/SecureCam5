@@ -68,7 +68,6 @@ class SettingsViewModel @Inject constructor(
         private set
     var currentModelName by mutableStateOf("None")
 
-    // CRITICAL FIX: Added UI Draft States so user can confirm crop and type the name
     var draftCroppedBitmap by mutableStateOf<Bitmap?>(null)
         private set
     var draftFaceName by mutableStateOf("")
@@ -160,7 +159,6 @@ class SettingsViewModel @Inject constructor(
 
                 val croppedBmp = Bitmap.createBitmap(bmp, left, top, w, h)
 
-                // Render Dialog on Main Thread
                 withContext(Dispatchers.Main) {
                     draftCroppedBitmap = croppedBmp
                     draftFaceName = "Face ${registeredFaces.value.size + 1}"
@@ -232,7 +230,10 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
         )
     }
     
-    var viewerMode by remember { mutableStateOf(prefs.getString("viewer_mode", "Firebase") ?: "Firebase") }
+    // Default to Local WiFi if null
+    var viewerMode by remember { mutableStateOf(prefs.getString("viewer_mode", "Local WiFi") ?: "Local WiFi") }
+    var menuExpanded by remember { mutableStateOf(false) }
+    
     var targetIp by remember { mutableStateOf(prefs.getString("target_ip", "") ?: "") }
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f).coerceIn(0.0f, 1.0f)) }
@@ -242,8 +243,9 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
-    var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
-    var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
+    
+    var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a visual analysis AI. Follow the user's trigger instructions exactly.") ?: "") }
+    var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Report if you see any people or a TV turned on.") ?: "") }
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> 
         uri?.let { viewModel.processFaceRegistration(it, context) }
@@ -255,7 +257,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     
     LaunchedEffect(Unit) { viewModel.loadPrefs(context) }
 
-    // Dialog Trigger
     if (viewModel.draftCroppedBitmap != null) {
         AlertDialog(
             onDismissRequest = { viewModel.cancelFaceRegistration() },
@@ -291,21 +292,67 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     ) { padding ->
         Column(modifier = Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState())) {
             
-            Text("Connection Mode & Endpoint", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Text("Connection & Networking", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { viewerMode = "Firebase"; prefs.edit().putString("viewer_mode", "Firebase").apply() }, colors = ButtonDefaults.buttonColors(containerColor = if (viewerMode == "Firebase") MaterialTheme.colorScheme.primary else Color.DarkGray), modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text("☁️ Firebase") }
-                Button(onClick = { viewerMode = "Local WiFi"; prefs.edit().putString("viewer_mode", "Local WiFi").apply() }, colors = ButtonDefaults.buttonColors(containerColor = if (viewerMode == "Local WiFi") MaterialTheme.colorScheme.primary else Color.DarkGray), modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text("🏠 Local WiFi") }
+
+            // Dropdown Menu for Connection Mode
+            ExposedDropdownMenuBox(
+                expanded = menuExpanded,
+                onExpandedChange = { menuExpanded = !menuExpanded }
+            ) {
+                OutlinedTextField(
+                    value = viewerMode,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Routing Protocol") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth(),
+                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                )
+                ExposedDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    listOf("Local WiFi", "Firebase").forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(mode) },
+                            onClick = {
+                                viewerMode = mode
+                                prefs.edit().putString("viewer_mode", mode).apply()
+                                menuExpanded = false
+                            }
+                        )
+                    }
+                }
             }
             
             Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = securityToken, 
+                onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, 
+                label = { Text("Master Auth Token (Must match in Viewer App)") }, 
+                trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, 
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Conditionally show networking settings
             if (viewerMode == "Local WiFi") {
-                Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world. This keeps your stream direct and private without needing third-party cloud servers.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = targetIp, 
+                    onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, 
+                    label = { Text("Camera IP Address (e.g. 192.168.1.5 or Tailscale IP)") }, 
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else if (viewerMode == "Firebase") {
+                Text("Firebase routing requires your active Google Cloud credentials to relay streams globally.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth())
             }
-            OutlinedTextField(value = targetIp, onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, label = { Text(if (viewerMode == "Local WiFi") "Camera IP Address (e.g. 192.168.1.5 or Tailscale IP)" else "IP Field Disabled (Firebase Active)") }, enabled = viewerMode == "Local WiFi", modifier = Modifier.fillMaxWidth())
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Token (Must match EXACTLY in Viewer App to connect)") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
@@ -337,16 +384,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
-            HorizontalDivider()
-            Spacer(modifier = Modifier.height(24.dp))
-
-            Text("Firebase Credentials", style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth(), enabled = viewerMode == "Firebase")
-            OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), enabled = viewerMode == "Firebase")
-            OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth(), enabled = viewerMode == "Firebase")
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
@@ -399,9 +436,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(24.dp))
             Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = sysPrompt, onValueChange = { sysPrompt = it; prefs.edit().putString("prompt_sys", it).apply() }, label = { Text("System Prompt") }, modifier = Modifier.fillMaxWidth())
+            Text("System Prompt defines the AI's core instructions and rules. User Prompt defines what to search the specific frame for.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(4.dp))
+            OutlinedTextField(value = sysPrompt, onValueChange = { sysPrompt = it; prefs.edit().putString("prompt_sys", it).apply() }, label = { Text("System Prompt (Rules & Behavior)") }, modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt (Custom Trigger)") }, modifier = Modifier.fillMaxWidth())
 
             Spacer(modifier = Modifier.height(24.dp))
             Button(onClick = { filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.isImporting) { Text(if (viewModel.isImporting) "Loading Model..." else "Select New Model") }
