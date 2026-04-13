@@ -4,6 +4,7 @@ import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -15,10 +16,15 @@ class LocalSignalingServer(private val port: Int, private val expectedToken: Str
     private var isRunning = false
 
     fun start() {
+        if (isRunning) return
         isRunning = true
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                serverSocket = ServerSocket(port)
+                // FIX 2: Enable reuseAddress so rapid exits/enters don't crash with BindException
+                serverSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(port))
+                }
                 while (isRunning) {
                     clientSocket = serverSocket?.accept()
                     out = PrintWriter(clientSocket!!.getOutputStream(), true)
