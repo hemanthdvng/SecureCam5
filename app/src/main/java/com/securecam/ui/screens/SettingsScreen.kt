@@ -95,7 +95,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
     var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
     
-    // NEW: Authorized Persona Filter
     var knownPersons by remember { mutableStateOf(prefs.getString("known_persons", "") ?: "") }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { viewModel.importModel(it, context) } }
@@ -123,7 +122,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
-            // --- AI PERSONA FILTER ---
             Text("Authorized Personnel (Face Filter)", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(
