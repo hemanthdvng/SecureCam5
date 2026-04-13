@@ -75,5 +75,7 @@ dependencies {
         exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'
     }
     
-    implementation 'com.vanniktech:android-image-cropper:4.5.0'
+    // ML Kit for Auto-Cropping
+    implementation 'com.google.mlkit:face-detection:16.1.6'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3'
 }
