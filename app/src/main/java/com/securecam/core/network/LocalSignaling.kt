@@ -7,12 +7,12 @@ import java.io.PrintWriter
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.CopyOnWriteArrayList
 
 class LocalSignalingServer(private val port: Int, private val expectedToken: String) {
     var onMessageReceived: ((String) -> Unit)? = null
     private var serverSocket: ServerSocket? = null
-    private var clientSocket: Socket? = null
-    private var out: PrintWriter? = null
+    private val clients = CopyOnWriteArrayList<PrintWriter>()
     private var isRunning = false
 
     fun start() {
@@ -20,36 +20,49 @@ class LocalSignalingServer(private val port: Int, private val expectedToken: Str
         isRunning = true
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                // FIX 2: Enable reuseAddress so rapid exits/enters don't crash with BindException
                 serverSocket = ServerSocket().apply {
                     reuseAddress = true
                     bind(InetSocketAddress(port))
                 }
                 while (isRunning) {
-                    clientSocket = serverSocket?.accept()
-                    out = PrintWriter(clientSocket!!.getOutputStream(), true)
-                    val reader = BufferedReader(InputStreamReader(clientSocket!!.inputStream))
+                    val clientSocket = serverSocket?.accept() ?: continue
                     
-                    val token = reader.readLine()
-                    if (token != expectedToken) {
-                        clientSocket?.close()
-                        continue
-                    }
-                    
-                    while (isRunning && !clientSocket!!.isClosed) {
-                        val msg = reader.readLine() ?: break
-                        withContext(Dispatchers.Main) { onMessageReceived?.invoke(msg) }
+                    // FIX: Spawn a new coroutine per client so Viewer UI and Background Service can run simultaneously
+                    launch {
+                        var out: PrintWriter? = null
+                        try {
+                            out = PrintWriter(clientSocket.getOutputStream(), true)
+                            val reader = BufferedReader(InputStreamReader(clientSocket.inputStream))
+                            
+                            val token = reader.readLine()
+                            if (token != expectedToken) {
+                                clientSocket.close()
+                                return@launch
+                            }
+                            
+                            clients.add(out)
+                            while (isRunning && !clientSocket.isClosed) {
+                                val msg = reader.readLine() ?: break
+                                withContext(Dispatchers.Main) { onMessageReceived?.invoke(msg) }
+                            }
+                        } catch (e: Exception) {} finally {
+                            out?.let { clients.remove(it) }
+                            try { clientSocket.close() } catch(e: Exception){}
+                        }
                     }
                 }
             } catch (e: Exception) {}
         }
     }
 
-    fun send(msg: String) { CoroutineScope(Dispatchers.IO).launch { out?.println(msg) } }
+    fun broadcast(msg: String) { 
+        CoroutineScope(Dispatchers.IO).launch { clients.forEach { it.println(msg) } } 
+    }
 
     fun stop() {
         isRunning = false
-        try { clientSocket?.close(); serverSocket?.close() } catch (e: Exception) {}
+        try { serverSocket?.close() } catch (e: Exception) {}
+        clients.clear()
     }
 }
 
