@@ -46,8 +46,35 @@ class SettingsViewModel @Inject constructor(
     private val aiPipeline: HybridAIPipeline
 ) : ViewModel() {
     val isLlmEnabled = repository.isLlmEnabled.stateIn(viewModelScope, SharingStarted.Lazily, true)
-    
+    var isImporting by mutableStateOf(false)
+        private set
+    var currentModelName by mutableStateOf("None")
+
+    fun loadPrefs(context: Context) {
+        val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+        currentModelName = prefs.getString("selected_model", "None") ?: "None"
+    }
+
     fun toggleLlm(enabled: Boolean) { viewModelScope.launch { repository.setLlmEnabled(enabled) } }
+
+    fun importModel(uri: Uri, context: Context) {
+        isImporting = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var fileName = "custom_model.litertlm"
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) fileName = cursor.getString(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME) ?: 0)
+                }
+                val destFile = File(context.filesDir, fileName)
+                context.contentResolver.openInputStream(uri)?.use { input -> destFile.outputStream().use { output -> input.copyTo(output) } }
+                context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
+                currentModelName = fileName
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Model $fileName Loaded!", Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Import Failed: ${e.message}", Toast.LENGTH_LONG).show() }
+            } finally { isImporting = false }
+        }
+    }
 
     fun processFaceRegistration(uri: Uri, context: Context, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -73,7 +100,7 @@ class SettingsViewModel @Inject constructor(
                     }
                 } else {
                     withContext(Dispatchers.Main) { 
-                        Toast.makeText(context, "Could not extract face data.", Toast.LENGTH_LONG).show() 
+                        Toast.makeText(context, "Could not extract face data. Try a tight crop of the face.", Toast.LENGTH_LONG).show() 
                         onComplete(false)
                     }
                 }
@@ -108,9 +135,12 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f)) }
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", true)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
+    var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
     var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
+    var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
+    var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
     
     var hasRegisteredFace by remember { mutableStateOf((prefs.getString("authorized_face_vector", "") ?: "").isNotBlank()) }
 
@@ -121,6 +151,12 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             }
         }
     }
+
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> 
+        uri?.let { viewModel.importModel(it, context) } 
+    }
+    
+    LaunchedEffect(Unit) { viewModel.loadPrefs(context) }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }) }
@@ -145,7 +181,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Upload a clear portrait of authorized personnel. The AI will extract their facial vector and store it entirely offline. If this face is detected, alarms are disabled.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Upload a closely cropped, square photo of your face (like a passport photo). The AI will extract the facial vector and store it offline.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
             
             Button(
@@ -183,7 +219,10 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 Switch(checked = popupNotifications, onCheckedChange = { popupNotifications = it; prefs.edit().putBoolean("enable_notifications", it).apply() })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge) }
+                Column(modifier = Modifier.weight(1f)) { 
+                    Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge) 
+                    Text("Current model: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Switch(checked = llmEnabled, onCheckedChange = { viewModel.toggleLlm(it) })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -191,6 +230,14 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 Switch(checked = debugMode, onCheckedChange = { debugMode = it; prefs.edit().putBoolean("debug_mode", it).apply() })
             }
             
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Hardware Acceleration", style = MaterialTheme.typography.titleMedium)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("CPU", "GPU", "NPU").forEach { backend ->
+                    Button(onClick = { aiBackend = backend; prefs.edit().putString("ai_backend", backend).apply() }, colors = ButtonDefaults.buttonColors(containerColor = if (aiBackend == backend) MaterialTheme.colorScheme.primary else Color.DarkGray), modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { Text(backend) }
+                }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
@@ -202,6 +249,18 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
             Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.0f..1.0f, steps = 100)
 
+            // RESTORED CUSTOM PROMPTS & UPLOADER
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+            Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = sysPrompt, onValueChange = { sysPrompt = it; prefs.edit().putString("prompt_sys", it).apply() }, label = { Text("System Prompt") }, modifier = Modifier.fillMaxWidth())
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt") }, modifier = Modifier.fillMaxWidth())
+
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(onClick = { filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.isImporting) { Text(if (viewModel.isImporting) "Loading Model..." else "Select New Model") }
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
