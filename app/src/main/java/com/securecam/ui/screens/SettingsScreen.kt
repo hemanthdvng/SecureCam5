@@ -55,13 +55,14 @@ import kotlin.math.roundToInt
 import java.util.UUID
 import javax.inject.Inject
 
-// CRITICAL FIX: Removed complex dependencies to fix the Unresolved Reference compiler errors
 @HiltViewModel
 class SettingsViewModel @Inject constructor() : ViewModel() {
     
     var isImporting by mutableStateOf(false)
         private set
     var isDownloading by mutableStateOf(false)
+        private set
+    var downloadProgress by mutableStateOf(0)
         private set
     var currentModelName by mutableStateOf("None")
 
@@ -112,11 +113,13 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
         }
     }
 
+    // CRITICAL FIX: Cloud Download WITH Percentage Display
     fun downloadCloudModel(context: Context) {
         isDownloading = true
+        downloadProgress = 0
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Downloading Cloud Model (This may take a while)...", Toast.LENGTH_LONG).show() }
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Connecting to HuggingFace...", Toast.LENGTH_SHORT).show() }
                 val urlStr = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
                 val url = java.net.URL(urlStr)
                 val connection = url.openConnection() as java.net.HttpURLConnection
@@ -124,11 +127,27 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                 connection.connect()
 
                 if (connection.responseCode == java.net.HttpURLConnection.HTTP_OK) {
+                    val fileLength = connection.contentLength
                     val fileName = "gemma-4-E2B-it.litertlm"
                     val destFile = File(context.filesDir, fileName)
-                    connection.inputStream.use { input ->
-                        destFile.outputStream().use { output -> input.copyTo(output) }
+                    val input = connection.inputStream
+                    val output = destFile.outputStream()
+                    val data = ByteArray(8192)
+                    var total: Long = 0
+                    var count: Int
+                    
+                    while (input.read(data).also { count = it } != -1) {
+                        total += count
+                        if (fileLength > 0) {
+                            val progress = ((total * 100) / fileLength).toInt()
+                            withContext(Dispatchers.Main) { downloadProgress = progress }
+                        }
+                        output.write(data, 0, count)
                     }
+                    output.flush()
+                    output.close()
+                    input.close()
+                    
                     context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
                     currentModelName = fileName
                     withContext(Dispatchers.Main) { Toast.makeText(context, "Cloud Model Downloaded & Loaded!", Toast.LENGTH_LONG).show() }
@@ -264,7 +283,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", false)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
     
-    // CRITICAL FIX: The Settings UI now directly reads and writes the AI toggles to SharedPreferences
     var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
     var faceRecogEnabled by remember { mutableStateOf(prefs.getBoolean("face_recog_enabled", false)) }
     
@@ -357,6 +375,8 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             } else if (viewerMode == "Firebase") {
                 Spacer(modifier = Modifier.height(8.dp))
+                Text("Firebase routing requires your active Google Cloud credentials to relay streams globally.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth())
@@ -437,7 +457,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 enabled = !viewModel.isImporting && !viewModel.isDownloading,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
             ) { 
-                Text(if (viewModel.isDownloading) "Downloading Cloud Model (Please Wait)..." else "☁️ Download Gemma-4-E2B Cloud Model") 
+                Text(if (viewModel.isDownloading) "Downloading Model: ${viewModel.downloadProgress}%" else "☁️ Download Gemma-4-E2B Cloud Model") 
             }
 
             Spacer(modifier = Modifier.height(48.dp))
