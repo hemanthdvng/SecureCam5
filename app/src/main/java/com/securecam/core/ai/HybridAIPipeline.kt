@@ -28,6 +28,8 @@ class HybridAIPipeline @Inject constructor(
     
     private val llmAnalyzer = LlmVisionAnalyzer(context)
     private val biometricEngine = BiometricEngine(context)
+    private val faceDetectorOptions = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
+    private val faceDetector = FaceDetection.getClient(faceDetectorOptions)
     
     private var isLlmBusy = false
     private var isLlmInitialized = false
@@ -67,7 +69,6 @@ class HybridAIPipeline @Inject constructor(
                     eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Camera heartbeat established. AI is receiving live frames.", 1.0f))
                 }
 
-                // CRITICAL FIX: Reads directly from SharedPreferences on every frame so UI Sync works instantly
                 val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                 val isFaceRecogEnabledSetting = prefs.getBoolean("face_recog_enabled", false)
                 val isLlmEnabledSetting = prefs.getBoolean("llm_enabled", true)
@@ -77,9 +78,7 @@ class HybridAIPipeline @Inject constructor(
                 if (isFaceRecogEnabledSetting) {
                     try {
                         val inputImage = InputImage.fromBitmap(bitmap, 0)
-                        val options = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
-                        val detector = FaceDetection.getClient(options)
-                        val facesList = detector.process(inputImage).await()
+                        val facesList = faceDetector.process(inputImage).await()
 
                         if (facesList.isNotEmpty()) {
                             val savedFacesJson = prefs.getString("authorized_faces", "[]") ?: "[]"
@@ -89,12 +88,12 @@ class HybridAIPipeline @Inject constructor(
                             val recognizedNames = mutableSetOf<String>()
 
                             if (savedFaces.isNotEmpty()) {
+                                // CROWD RECOGNITION: Loop through every face found in the image
                                 for (mlFace in facesList) {
                                     val bounds = mlFace.boundingBox
                                     val size = maxOf(bounds.width(), bounds.height())
                                     var left = bounds.centerX() - size / 2
                                     var top = bounds.centerY() - size / 2
-                                    
                                     left = left.coerceAtLeast(0)
                                     top = top.coerceAtLeast(0)
                                     val w = minOf(size, bitmap.width - left).coerceAtLeast(1)
@@ -112,6 +111,7 @@ class HybridAIPipeline @Inject constructor(
                                             }
                                         }
                                     }
+                                    croppedFace.recycle()
                                 }
                                 
                                 if (recognizedNames.isNotEmpty()) {
@@ -146,10 +146,12 @@ class HybridAIPipeline @Inject constructor(
         isLlmBusy = true
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val confThreshold = prefs.getFloat("confidence_threshold", 0.60f)
+        val debugMode = prefs.getBoolean("debug_mode", false)
         
         val basePrompt = prefs.getString("prompt_sys", "You are an AI security camera. Answer the user's prompt based ONLY on the image provided.") ?: ""
         val usrPrompt = prefs.getString("prompt_usr", "Report if you see any clock.") ?: ""
         
+        // STRICT BINARY PROMPT: Purely evaluates the user trigger without forcing "threat" vocabulary.
         val enforcedPrompt = "$basePrompt\n\nCRITICAL RULE: Evaluate the image based ONLY on the user's specific trigger. If the requested object/event IS present in the image, reply 'ALERT: <brief description>'. If the requested object/event is NOT present, you must reply EXACTLY with the word 'CLEAR'. Do not explain yourself."
 
         try {
@@ -164,8 +166,6 @@ class HybridAIPipeline @Inject constructor(
                             val output = text.trim()
                             val isSafe = output.equals("CLEAR", ignoreCase = true) || output.contains("[STATUS_SAFE]", ignoreCase = true)
                             
-                            // CRITICAL FIX: The LLM will ALWAYS emit its scan result to the UI so you can visually confirm it is working. 
-                            // EventRepository safely handles ignoring "Safe" scans for the Database logging.
                             aiScope.launch {
                                 val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Trigger found" else "🚨 $output"
                                 eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
@@ -174,9 +174,11 @@ class HybridAIPipeline @Inject constructor(
                                     val dbUrl = prefs.getString("fb_db_url", "") ?: ""
                                     val token = prefs.getString("security_token", "") ?: ""
                                     if (dbUrl.isNotBlank() && token.isNotBlank()) {
-                                        com.google.firebase.database.FirebaseDatabase.getInstance()
-                                            .getReference("securecam/alerts/$token").push()
-                                            .setValue(mapOf("timestamp" to System.currentTimeMillis(), "text" to output))
+                                        try {
+                                            com.google.firebase.database.FirebaseDatabase.getInstance()
+                                                .getReference("securecam/alerts/$token").push()
+                                                .setValue(mapOf("timestamp" to System.currentTimeMillis(), "text" to output))
+                                        } catch (e: Exception) {}
                                     }
                                 }
                             }
