@@ -22,10 +22,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
 import androidx.navigation.NavController
 import com.google.gson.Gson
 import com.securecam.core.network.LocalSignalingClient
 import com.securecam.core.webrtc.*
+import com.securecam.data.repository.EventRepository
+import com.securecam.data.repository.SecurityEvent
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -43,10 +48,14 @@ import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import javax.inject.Inject
+
+@HiltViewModel
+class ViewerViewModel @Inject constructor(val eventRepository: EventRepository) : ViewModel()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ViewerScreen(navController: NavController) {
+fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hiltViewModel()) {
     val context = LocalContext.current
     
     var hasMicPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
@@ -61,8 +70,6 @@ fun ViewerScreen(navController: NavController) {
         var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
         var localAudioTrack by remember { mutableStateOf<AudioTrack?>(null) }
         var isMicActive by remember { mutableStateOf(false) }
-        
-        // DVR Vault Popup State
         var showVault by remember { mutableStateOf(false) }
         
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -71,6 +78,22 @@ fun ViewerScreen(navController: NavController) {
 
         var fbClient: FirebaseSignalingClient? = null
         var localClient: LocalSignalingClient? = null
+
+        // Syncs background Service alerts & active WebRTC alerts dynamically into the UI List
+        LaunchedEffect(Unit) {
+            var lastAlert = ""
+            var lastTime = 0L
+            viewModel.eventRepository.securityEvents.collect { event ->
+                val now = System.currentTimeMillis()
+                if (event.description != lastAlert || now - lastTime > 2000) {
+                    lastAlert = event.description
+                    lastTime = now
+                    val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                    alertHistory.add(0, "[$timeStr] ${event.description}")
+                    if (alertHistory.size > 50) alertHistory.removeLast()
+                }
+            }
+        }
 
         fun sendCommand(cmd: String) {
             dataChannel?.let { dc ->
@@ -108,10 +131,8 @@ fun ViewerScreen(navController: NavController) {
                                 val bytes = ByteArray(byteBuffer.remaining())
                                 byteBuffer.get(bytes)
                                 val text = String(bytes, Charsets.UTF_8)
-                                val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                                CoroutineScope(Dispatchers.Main).launch {
-                                    alertHistory.add(0, "[$timeStr] $text")
-                                    if (alertHistory.size > 50) alertHistory.removeLast()
+                                CoroutineScope(Dispatchers.IO).launch {
+                                    viewModel.eventRepository.emitEvent(SecurityEvent("WEBRTC", text, 1.0f))
                                 }
                             }
                         }
@@ -160,10 +181,8 @@ fun ViewerScreen(navController: NavController) {
                         "ICE" -> peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String))
                         "ALERT" -> {
                             val text = map["text"] as? String ?: ""
-                            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                            CoroutineScope(Dispatchers.Main).launch {
-                                alertHistory.add(0, "[$timeStr] $text")
-                                if (alertHistory.size > 50) alertHistory.removeLast()
+                            CoroutineScope(Dispatchers.IO).launch {
+                                viewModel.eventRepository.emitEvent(SecurityEvent("TCP_ALERT", text, 1.0f))
                             }
                         }
                     }
@@ -284,7 +303,7 @@ fun ViewerScreen(navController: NavController) {
                                 onClick = { showVault = true }, 
                                 shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
-                            ) { Text("📁", fontSize = 24.sp) }
+                            ) { Text("🎞️", fontSize = 24.sp) }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
