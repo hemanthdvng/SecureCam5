@@ -116,13 +116,16 @@ class MjpegServer(private val context: Context) {
     private fun buildPlayerHtml(id: String, token: String): String {
         val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), id)
         val frames = dir.listFiles()?.filter { it.name.endsWith(".jpg") }?.sortedBy { it.name }?.map { it.name } ?: emptyList()
-        val framesJson = frames.joinToString("','", "['", "']")
+        
+        // COMPILER FIX: Calculate variables outside of the raw string to prevent Kotlin parser crash
+        val framesJson = if (frames.isEmpty()) "[]" else frames.joinToString("','", "['", "']")
+        val firstFrame = frames.firstOrNull() ?: ""
         
         return """
             <html><head><meta name='viewport' content='width=device-width, initial-scale=1'>
             <style>body{background:#0d1117; color:#c9d1d9; font-family:-apple-system, sans-serif; text-align:center; padding:16px; margin:0;} img{width:100%; border-radius:8px; border:2px solid #30363d;}</style></head>
             <body><h3 style='color:#f85149;'>⚠️ Intruder Event</h3>
-            <img id='player' src='/frame?id=$id&frame=${frames.firstOrNull() ?: ""}&token=$token' />
+            <img id='player' src='/frame?id=$id&frame=$firstFrame&token=$token' />
             <p style='color:#8b949e; font-size:12px;'>Playing 10-Second Buffer...</p>
             <br><a href='/vault?token=$token' style='display:inline-block; padding:12px 24px; background:#1f6feb; border-radius:6px; color:white; text-decoration:none; font-weight:bold;'>⬅ Back to Vault</a>
             <script>
