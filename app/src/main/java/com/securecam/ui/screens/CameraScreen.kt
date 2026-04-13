@@ -67,241 +67,256 @@ fun getLocalIpAddress(context: Context): String {
 fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hiltViewModel()) {
     val context = LocalContext.current
     val activity = context as? android.app.Activity
-    var hasPermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     
-    val localRenderer = remember { SurfaceViewRenderer(context) }
-    var streamStatus by remember { mutableStateOf("Initializing Hardware...") }
-    val alertHistory = remember { mutableStateListOf<String>() }
-    var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
-    
-    var forceScanTrigger by remember { mutableStateOf(0) }
-    var isScreenFlashActive by remember { mutableStateOf(false) }
-    var isScreaming by remember { mutableStateOf(false) }
-    var tts: TextToSpeech? by remember { mutableStateOf(null) }
-    
-    val mjpegServer = remember { MjpegServer() }
-    val ipAddress = remember { getLocalIpAddress(context) }
+    // SAFEGUARD: Request both hardware permissions before booting
+    var hasCamPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
+    var hasMicPerm by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) }
 
-    val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-    val scanIntervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
-    val securityToken = remember { prefs.getString("security_token", "") ?: "" }
-
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { hasPermission = it }
-    LaunchedEffect(Unit) { if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA) }
-
-    DisposableEffect(Unit) {
-        tts = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.US
-                tts?.setPitch(1.3f)
-                tts?.setSpeechRate(1.2f)
-            }
-        }
-        onDispose { tts?.shutdown() }
-    }
-
-    LaunchedEffect(isScreenFlashActive) {
-        val window = activity?.window
-        val params = window?.attributes
-        params?.screenBrightness = if (isScreenFlashActive) 1.0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-        window?.attributes = params
-    }
-
-    LaunchedEffect(isScreaming) {
-        if (isScreaming) {
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0)
-            while(isScreaming && isActive) {
-                tts?.speak("WARNING! INTRUDER DETECTED! LEAVE THE PREMISES IMMEDIATELY!", TextToSpeech.QUEUE_FLUSH, null, null)
-                delay(4000)
-            }
-        } else {
-            tts?.stop()
-        }
-    }
-
-    LaunchedEffect(forceScanTrigger) {
-        while(isActive) {
-            delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
-            localRenderer.addFrameListener({ bitmap ->
-                val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                viewModel.aiPipeline.processFrame(bmpCopy)
-                mjpegServer.updateFrame(bmpCopy)
-            }, 0.5f)
-            if (forceScanTrigger > 0) forceScanTrigger = 0
-        }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
+        hasCamPerm = perms[Manifest.permission.CAMERA] ?: hasCamPerm
+        hasMicPerm = perms[Manifest.permission.RECORD_AUDIO] ?: hasMicPerm
     }
 
     LaunchedEffect(Unit) {
-        viewModel.eventRepository.securityEvents.collect { event ->
-            val text = event.description
-            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            
-            alertHistory.add(0, "[$timeStr] $text")
-            if (alertHistory.size > 50) alertHistory.removeLast()
-            
-            dataChannel?.let { dc ->
-                if (dc.state() == DataChannel.State.OPEN) {
-                    val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8))
-                    dc.send(DataChannel.Buffer(buffer, false))
-                }
-            }
-        }
+        val reqs = mutableListOf<String>()
+        if (!hasCamPerm) reqs.add(Manifest.permission.CAMERA)
+        if (!hasMicPerm) reqs.add(Manifest.permission.RECORD_AUDIO)
+        if (reqs.isNotEmpty()) permLauncher.launch(reqs.toTypedArray())
     }
 
-    DisposableEffect(Unit) {
-        viewModel.aiPipeline.start()
-        mjpegServer.start(8080, securityToken)
+    // Wrap the entire hardware execution engine in a permission lock
+    if (hasCamPerm && hasMicPerm) {
+        val localRenderer = remember { SurfaceViewRenderer(context) }
+        var streamStatus by remember { mutableStateOf("Initializing Hardware...") }
+        val alertHistory = remember { mutableStateListOf<String>() }
+        var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
         
-        val rtcManager = WebRTCManager(context).apply { initRenderer(localRenderer) }
-        val localServer = LocalSignalingServer(8081, securityToken)
+        var forceScanTrigger by remember { mutableStateOf(0) }
+        var isScreenFlashActive by remember { mutableStateOf(false) }
+        var isScreaming by remember { mutableStateOf(false) }
+        var tts: TextToSpeech? by remember { mutableStateOf(null) }
         
-        // Only load Firebase if credentials exist
-        val fbUrl = prefs.getString("fb_db_url", "") ?: ""
-        var firebaseClient: FirebaseSignalingClient? = null
-        if (fbUrl.isNotBlank()) {
-            firebaseClient = FirebaseSignalingClient(context, "CAMERA")
-            firebaseClient.clearSignals()
-            firebaseClient.onConnected = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on WiFi & Firebase" } }
-        } else {
-            CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on Local WiFi only" }
+        val mjpegServer = remember { MjpegServer() }
+        val ipAddress = remember { getLocalIpAddress(context) }
+
+        val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+        val scanIntervalMs = (prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()
+        val securityToken = remember { prefs.getString("security_token", "") ?: "" }
+
+        DisposableEffect(Unit) {
+            tts = TextToSpeech(context) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    tts?.language = Locale.US
+                    tts?.setPitch(1.3f)
+                    tts?.setSpeechRate(1.2f)
+                }
+            }
+            onDispose { tts?.shutdown() }
         }
-        localServer.start()
-        
-        // Define WebRTC Connection
-        var activeSignaler: String? = null
-        
-        val observer = object : SimplePeerConnectionObserver() {
-            override fun onIceCandidate(candidate: IceCandidate?) {
-                candidate?.let {
-                    val json = Gson().toJson(mapOf("type" to "ICE", "sdpMid" to it.sdpMid, "sdpMLineIndex" to it.sdpMLineIndex, "sdp" to it.sdp))
-                    if (activeSignaler == "LOCAL") localServer.send(json)
-                    else if (activeSignaler == "FIREBASE") firebaseClient?.sendSignal("ICE", Gson().toJson(IceCandidateData(it.sdpMid, it.sdpMLineIndex, it.sdp)))
+
+        LaunchedEffect(isScreenFlashActive) {
+            val window = activity?.window
+            val params = window?.attributes
+            params?.screenBrightness = if (isScreenFlashActive) 1.0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            window?.attributes = params
+        }
+
+        LaunchedEffect(isScreaming) {
+            if (isScreaming) {
+                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0)
+                while(isScreaming && isActive) {
+                    tts?.speak("WARNING! INTRUDER DETECTED! LEAVE THE PREMISES IMMEDIATELY!", TextToSpeech.QUEUE_FLUSH, null, null)
+                    delay(4000)
+                }
+            } else {
+                tts?.stop()
+            }
+        }
+
+        LaunchedEffect(forceScanTrigger) {
+            while(isActive) {
+                delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
+                localRenderer.addFrameListener({ bitmap ->
+                    val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    viewModel.aiPipeline.processFrame(bmpCopy)
+                    mjpegServer.updateFrame(bmpCopy)
+                }, 0.5f)
+                if (forceScanTrigger > 0) forceScanTrigger = 0
+            }
+        }
+
+        LaunchedEffect(Unit) {
+            viewModel.eventRepository.securityEvents.collect { event ->
+                val text = event.description
+                val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                
+                alertHistory.add(0, "[$timeStr] $text")
+                if (alertHistory.size > 50) alertHistory.removeLast()
+                
+                dataChannel?.let { dc ->
+                    if (dc.state() == DataChannel.State.OPEN) {
+                        val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8))
+                        dc.send(DataChannel.Buffer(buffer, false))
+                    }
                 }
             }
         }
-        
-        val peerConnection = rtcManager.createPeerConnection(observer)
-        val localAudio = rtcManager.createLocalAudioTrack()
-        localAudio?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
 
-        dataChannel = peerConnection?.createDataChannel("telemetry", DataChannel.Init())
-        dataChannel?.registerObserver(object : DataChannel.Observer {
-            override fun onBufferedAmountChange(p0: Long) {}
-            override fun onStateChange() {}
-            override fun onMessage(buffer: DataChannel.Buffer?) {
-                buffer?.data?.let { byteBuffer ->
-                    val bytes = ByteArray(byteBuffer.remaining())
-                    byteBuffer.get(bytes)
-                    val command = String(bytes, Charsets.UTF_8)
-                    
-                    CoroutineScope(Dispatchers.Main).launch {
-                        when (command) {
-                            "CMD_SIREN" -> { isScreaming = !isScreaming; alertHistory.add(0, "[SYSTEM] Siren toggled.") }
-                            "CMD_SWITCH_CAM" -> { rtcManager.switchCamera(); alertHistory.add(0, "[SYSTEM] Lens switched.") }
-                            "CMD_FORCE_SCAN" -> { forceScanTrigger++; alertHistory.add(0, "[SYSTEM] Scan forced.") }
-                            "CMD_FLASH" -> { isScreenFlashActive = !isScreenFlashActive; alertHistory.add(0, "[SYSTEM] Strobe toggled.") }
+        DisposableEffect(Unit) {
+            viewModel.aiPipeline.start()
+            mjpegServer.start(8080, securityToken)
+            
+            val rtcManager = WebRTCManager(context).apply { initRenderer(localRenderer) }
+            val localServer = LocalSignalingServer(8081, securityToken)
+            
+            val fbUrl = prefs.getString("fb_db_url", "") ?: ""
+            var firebaseClient: FirebaseSignalingClient? = null
+            if (fbUrl.isNotBlank()) {
+                firebaseClient = FirebaseSignalingClient(context, "CAMERA")
+                firebaseClient.clearSignals()
+                firebaseClient.onConnected = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on WiFi & Firebase" } }
+            } else {
+                CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on Local WiFi only" }
+            }
+            localServer.start()
+            
+            var activeSignaler: String? = null
+            
+            val observer = object : SimplePeerConnectionObserver() {
+                override fun onIceCandidate(candidate: IceCandidate?) {
+                    candidate?.let {
+                        val json = Gson().toJson(mapOf("type" to "ICE", "sdpMid" to it.sdpMid, "sdpMLineIndex" to it.sdpMLineIndex, "sdp" to it.sdp))
+                        if (activeSignaler == "LOCAL") localServer.send(json)
+                        else if (activeSignaler == "FIREBASE") firebaseClient?.sendSignal("ICE", Gson().toJson(IceCandidateData(it.sdpMid, it.sdpMLineIndex, it.sdp)))
+                    }
+                }
+            }
+            
+            val peerConnection = rtcManager.createPeerConnection(observer)
+            val localAudio = rtcManager.createLocalAudioTrack()
+            localAudio?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
+
+            dataChannel = peerConnection?.createDataChannel("telemetry", DataChannel.Init())
+            dataChannel?.registerObserver(object : DataChannel.Observer {
+                override fun onBufferedAmountChange(p0: Long) {}
+                override fun onStateChange() {}
+                override fun onMessage(buffer: DataChannel.Buffer?) {
+                    buffer?.data?.let { byteBuffer ->
+                        val bytes = ByteArray(byteBuffer.remaining())
+                        byteBuffer.get(bytes)
+                        val command = String(bytes, Charsets.UTF_8)
+                        
+                        CoroutineScope(Dispatchers.Main).launch {
+                            when (command) {
+                                "CMD_SIREN" -> { isScreaming = !isScreaming; alertHistory.add(0, "[SYSTEM] Siren toggled.") }
+                                "CMD_SWITCH_CAM" -> { rtcManager.switchCamera(); alertHistory.add(0, "[SYSTEM] Lens switched.") }
+                                "CMD_FORCE_SCAN" -> { forceScanTrigger++; alertHistory.add(0, "[SYSTEM] Scan forced.") }
+                                "CMD_FLASH" -> { isScreenFlashActive = !isScreenFlashActive; alertHistory.add(0, "[SYSTEM] Strobe toggled.") }
+                            }
                         }
                     }
                 }
+            })
+
+            val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
+            localTrack?.let { peerConnection?.addTrack(it, listOf("stream_1")) }
+
+            fun processOffer(sdpStr: String) {
+                val sdpMap = Gson().fromJson(sdpStr, Map::class.java)
+                val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(sdpMap["type"] as String), sdpMap["sdp"] as String)
+                peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
+                CoroutineScope(Dispatchers.Main).launch { streamStatus = "LIVE STREAM ACTIVE" }
             }
-        })
+            fun processJoin(signalerType: String) {
+                activeSignaler = signalerType
+                CoroutineScope(Dispatchers.Main).launch { streamStatus = "Viewer Connected via $signalerType! Gathering ICE..." }
+                peerConnection?.createOffer(object : SimpleSdpObserver() {
+                    override fun onCreateSuccess(sdp: SessionDescription?) {
+                        sdp?.let {
+                            peerConnection.setLocalDescription(SimpleSdpObserver(), it)
+                            if (signalerType == "LOCAL") localServer.send(Gson().toJson(mapOf("type" to "OFFER", "typeSDP" to it.type.canonicalForm(), "sdp" to it.description)))
+                            else firebaseClient?.sendSignal("OFFER", Gson().toJson(SdpData(it.type.canonicalForm(), it.description)))
+                        }
+                    }
+                }, MediaConstraints())
+            }
 
-        val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
-        localTrack?.let { peerConnection?.addTrack(it, listOf("stream_1")) }
+            firebaseClient?.onJoinReceived = { processJoin("FIREBASE") }
+            firebaseClient?.onAnswerReceived = { processOffer(it) }
+            firebaseClient?.onIceCandidateReceived = { iceStr ->
+                val data = Gson().fromJson(iceStr, IceCandidateData::class.java)
+                peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp))
+            }
 
-        // --- Handle Incoming Connections (Local OR Firebase) ---
-        fun processOffer(sdpStr: String) {
-            val sdpMap = Gson().fromJson(sdpStr, Map::class.java)
-            val sdp = SessionDescription(SessionDescription.Type.fromCanonicalForm(sdpMap["type"] as String), sdpMap["sdp"] as String)
-            peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
-            CoroutineScope(Dispatchers.Main).launch { streamStatus = "LIVE STREAM ACTIVE" }
-        }
-        fun processJoin(signalerType: String) {
-            activeSignaler = signalerType
-            CoroutineScope(Dispatchers.Main).launch { streamStatus = "Viewer Connected via $signalerType! Gathering ICE..." }
-            peerConnection?.createOffer(object : SimpleSdpObserver() {
-                override fun onCreateSuccess(sdp: SessionDescription?) {
-                    sdp?.let {
-                        peerConnection.setLocalDescription(SimpleSdpObserver(), it)
-                        if (signalerType == "LOCAL") localServer.send(Gson().toJson(mapOf("type" to "OFFER", "typeSDP" to it.type.canonicalForm(), "sdp" to it.description)))
-                        else firebaseClient?.sendSignal("OFFER", Gson().toJson(SdpData(it.type.canonicalForm(), it.description)))
+            localServer.onMessageReceived = { jsonStr ->
+                val map = Gson().fromJson(jsonStr, Map::class.java)
+                when (map["type"]) {
+                    "JOIN" -> processJoin("LOCAL")
+                    "ANSWER" -> {
+                        val sdpStr = Gson().toJson(mapOf("type" to map["typeSDP"], "sdp" to map["sdp"]))
+                        processOffer(sdpStr)
+                    }
+                    "ICE" -> {
+                        peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String))
                     }
                 }
-            }, MediaConstraints())
-        }
+            }
 
-        // Firebase Listeners
-        firebaseClient?.onJoinReceived = { processJoin("FIREBASE") }
-        firebaseClient?.onAnswerReceived = { processOffer(it) }
-        firebaseClient?.onIceCandidateReceived = { iceStr ->
-            val data = Gson().fromJson(iceStr, IceCandidateData::class.java)
-            peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp))
-        }
-
-        // Local Server Listeners
-        localServer.onMessageReceived = { jsonStr ->
-            val map = Gson().fromJson(jsonStr, Map::class.java)
-            when (map["type"]) {
-                "JOIN" -> processJoin("LOCAL")
-                "ANSWER" -> {
-                    val sdpStr = Gson().toJson(mapOf("type" to map["typeSDP"], "sdp" to map["sdp"]))
-                    processOffer(sdpStr)
-                }
-                "ICE" -> {
-                    peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String))
-                }
+            onDispose {
+                try { localRenderer.release() } catch(e: Exception){}
+                isScreaming = false
+                mjpegServer.stop()
+                localServer.stop()
+                dataChannel?.dispose()
+                peerConnection?.dispose()
+                rtcManager.dispose()
+                viewModel.aiPipeline.stop()
             }
         }
 
-        onDispose {
-            try { localRenderer.release() } catch(e: Exception){}
-            isScreaming = false
-            mjpegServer.stop()
-            localServer.stop()
-            dataChannel?.dispose()
-            peerConnection?.dispose()
-            rtcManager.dispose()
-            viewModel.aiPipeline.stop()
-        }
-    }
-
-    Box(modifier = Modifier.fillMaxSize().background(if (isScreenFlashActive) Color.White else Color.Black)) {
-        
-        if (!isScreenFlashActive) AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
-
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(text = "Status: $streamStatus", color = Color.Green)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(text = "PC Web Server: http://$ipAddress:8080/?token=$securityToken", color = Color.Cyan)
-                }
-            }
-            Spacer(modifier = Modifier.height(16.dp))
+        Box(modifier = Modifier.fillMaxSize().background(if (isScreenFlashActive) Color.White else Color.Black)) {
             
-            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                items(alertHistory) { alert ->
-                    val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]")
-                    val isSystem = alert.contains("[SYSTEM]")
-                    val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = bgColor),
-                        modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
-                    ) {
-                        Text(text = alert, color = Color.White, modifier = Modifier.padding(12.dp))
+            if (!isScreenFlashActive) AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
+
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(text = "Status: $streamStatus", color = Color.Green)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(text = "PC Web Server: http://$ipAddress:8080/?token=$securityToken", color = Color.Cyan)
                     }
                 }
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    items(alertHistory) { alert ->
+                        val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]")
+                        val isSystem = alert.contains("[SYSTEM]")
+                        val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = bgColor),
+                            modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
+                        ) {
+                            Text(text = alert, color = Color.White, modifier = Modifier.padding(12.dp))
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(72.dp))
             }
-            Spacer(modifier = Modifier.height(72.dp))
-        }
 
-        Button(
-            onClick = { navController.popBackStack() },
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).height(56.dp).fillMaxWidth(0.6f)
-        ) {
-            Text("END STREAM", style = MaterialTheme.typography.titleMedium)
+            Button(
+                onClick = { navController.popBackStack() },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).height(56.dp).fillMaxWidth(0.6f)
+            ) {
+                Text("END STREAM", style = MaterialTheme.typography.titleMedium)
+            }
+        }
+    } else {
+        // SAFEGUARD UI: Wait here until Android returns permission success
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+            Text("Waiting for Camera & Microphone Permissions...", color = Color.White)
         }
     }
 }
