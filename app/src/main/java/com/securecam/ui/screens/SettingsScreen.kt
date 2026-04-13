@@ -1,5 +1,6 @@
 package com.securecam.ui.screens
 
+import android.app.DownloadManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
@@ -60,12 +61,7 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
     
     var isImporting by mutableStateOf(false)
         private set
-    var isDownloading by mutableStateOf(false)
-        private set
-    var downloadProgress by mutableStateOf(0)
-        private set
     var currentModelName by mutableStateOf("None")
-
     var draftCroppedBitmap by mutableStateOf<Bitmap?>(null)
         private set
     var draftFaceName by mutableStateOf("")
@@ -76,13 +72,11 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
     fun loadPrefs(context: Context) {
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         currentModelName = prefs.getString("selected_model", "None") ?: "None"
-        
         val json = prefs.getString("authorized_faces", "[]") ?: "[]"
         try {
             val type = object : TypeToken<List<RegisteredFace>>() {}.type
             _registeredFaces.value = Gson().fromJson(json, type) ?: emptyList()
         } catch (e: Exception) {
-            prefs.edit().remove("authorized_faces").apply()
             _registeredFaces.value = emptyList()
         }
     }
@@ -90,8 +84,7 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
     fun removeFace(context: Context, id: String) {
         val updated = _registeredFaces.value.filter { it.id != id }
         _registeredFaces.value = updated
-        val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putString("authorized_faces", Gson().toJson(updated)).apply()
+        context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("authorized_faces", Gson().toJson(updated)).apply()
     }
 
     fun importModel(uri: Uri, context: Context) {
@@ -100,7 +93,7 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
             try {
                 var fileName = "custom_model.litertlm"
                 context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    if (cursor.moveToFirst()) fileName = cursor.getString(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME) ?: 0)
+                    if (cursor.moveToFirst()) fileName = cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
                 }
                 val destFile = File(context.filesDir, fileName)
                 context.contentResolver.openInputStream(uri)?.use { input -> destFile.outputStream().use { output -> input.copyTo(output) } }
@@ -113,52 +106,23 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
         }
     }
 
-    // CRITICAL FIX: Cloud Download WITH Percentage Display
     fun downloadCloudModel(context: Context) {
-        isDownloading = true
-        downloadProgress = 0
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Connecting to HuggingFace...", Toast.LENGTH_SHORT).show() }
-                val urlStr = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
-                val url = java.net.URL(urlStr)
-                val connection = url.openConnection() as java.net.HttpURLConnection
-                connection.requestMethod = "GET"
-                connection.connect()
-
-                if (connection.responseCode == java.net.HttpURLConnection.HTTP_OK) {
-                    val fileLength = connection.contentLength
-                    val fileName = "gemma-4-E2B-it.litertlm"
-                    val destFile = File(context.filesDir, fileName)
-                    val input = connection.inputStream
-                    val output = destFile.outputStream()
-                    val data = ByteArray(8192)
-                    var total: Long = 0
-                    var count: Int
-                    
-                    while (input.read(data).also { count = it } != -1) {
-                        total += count
-                        if (fileLength > 0) {
-                            val progress = ((total * 100) / fileLength).toInt()
-                            withContext(Dispatchers.Main) { downloadProgress = progress }
-                        }
-                        output.write(data, 0, count)
-                    }
-                    output.flush()
-                    output.close()
-                    input.close()
-                    
-                    context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
-                    currentModelName = fileName
-                    withContext(Dispatchers.Main) { Toast.makeText(context, "Cloud Model Downloaded & Loaded!", Toast.LENGTH_LONG).show() }
-                } else {
-                    throw Exception("HTTP ${connection.responseCode}")
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Download Failed: ${e.message}", Toast.LENGTH_LONG).show() }
-            } finally {
-                isDownloading = false
-            }
+        try {
+            val url = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
+            val request = DownloadManager.Request(Uri.parse(url))
+                .setTitle("Gemma AI Model")
+                .setDescription("Downloading SecureCam AI Engine...")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalFilesDir(context, null, "gemma-4-E2B-it.litertlm")
+            
+            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            dm.enqueue(request)
+            Toast.makeText(context, "Download started! Check your notification shade.", Toast.LENGTH_LONG).show()
+            
+            context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", "gemma-4-E2B-it.litertlm").apply()
+            currentModelName = "gemma-4-E2B-it.litertlm"
+        } catch (e: Exception) {
+            Toast.makeText(context, "Failed to start download: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -169,10 +133,10 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                 val socket = Socket(ip, 8081)
                 val out = PrintWriter(socket.getOutputStream(), true)
                 out.println(token)
-                
                 val syncData = mapOf(
                     "type" to "SYNC_SETTINGS",
                     "scan_interval_sec" to prefs.getFloat("scan_interval_sec", 5f).toDouble(),
+                    "video_record_len" to prefs.getFloat("video_record_len", 15f).toDouble(),
                     "confidence_threshold" to prefs.getFloat("confidence_threshold", 0.60f).toDouble(),
                     "prompt_sys" to prefs.getString("prompt_sys", ""),
                     "prompt_usr" to prefs.getString("prompt_usr", ""),
@@ -193,27 +157,20 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
             withContext(Dispatchers.Main) { Toast.makeText(context, "Scanning for face...", Toast.LENGTH_SHORT).show() }
             try {
                 var bmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ ->
-                        decoder.isMutableRequired = true
-                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                    }
+                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ -> decoder.isMutableRequired = true; decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE }
                 } else { MediaStore.Images.Media.getBitmap(context.contentResolver, uri) }
-
                 if (bmp.width > 1500 || bmp.height > 1500) {
                     val scale = 1500f / maxOf(bmp.width, bmp.height)
                     bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
                 }
-
                 val inputImage = InputImage.fromBitmap(bmp, 0)
                 val options = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
                 val detector = FaceDetection.getClient(options)
                 val facesList = detector.process(inputImage).await()
-
                 if (facesList.isEmpty()) {
                     withContext(Dispatchers.Main) { Toast.makeText(context, "No face found. Try a clearer photo.", Toast.LENGTH_LONG).show() }
                     return@launch
                 }
-
                 val bounds = facesList.first().boundingBox
                 val size = maxOf(bounds.width(), bounds.height())
                 var left = bounds.centerX() - size / 2
@@ -223,7 +180,6 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                 val w = minOf(size, bmp.width - left)
                 val h = minOf(size, bmp.height - top)
                 val croppedBmp = Bitmap.createBitmap(bmp, left, top, w, h)
-
                 withContext(Dispatchers.Main) {
                     draftCroppedBitmap = croppedBmp
                     draftFaceName = "Face ${_registeredFaces.value.size + 1}"
@@ -241,12 +197,10 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                 biometricEngine.initialize()
                 val embedding = biometricEngine.getFaceEmbedding(bmp)
                 biometricEngine.close()
-
                 if (embedding != null) {
                     val newFace = RegisteredFace(UUID.randomUUID().toString(), draftFaceName, embedding)
                     val updatedList = _registeredFaces.value + newFace
-                    val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-                    prefs.edit().putString("authorized_faces", Gson().toJson(updatedList)).apply()
+                    context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("authorized_faces", Gson().toJson(updatedList)).apply()
                     _registeredFaces.value = updatedList
                     withContext(Dispatchers.Main) { Toast.makeText(context, "Face added!", Toast.LENGTH_SHORT).show(); draftCroppedBitmap = null }
                 }
@@ -260,16 +214,13 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
 @Composable
 fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = hiltViewModel()) {
     val faces by viewModel.registeredFaces.collectAsState()
-    
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     
     var securityToken by remember { mutableStateOf(prefs.getString("security_token", "").takeIf { !it.isNullOrBlank() } ?: UUID.randomUUID().toString().substring(0, 8).also { prefs.edit().putString("security_token", it).apply() }) }
-    
     var viewerMode by remember { mutableStateOf(prefs.getString("viewer_mode", "Local WiFi") ?: "Local WiFi") }
     var menuExpanded by remember { mutableStateOf(false) }
-    
     var appRole by remember { mutableStateOf(prefs.getString("app_role", "Camera") ?: "Camera") }
     var roleExpanded by remember { mutableStateOf(false) }
     
@@ -279,10 +230,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
     
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
+    var videoRecordLen by remember { mutableStateOf(prefs.getFloat("video_record_len", 15f).coerceIn(5f, 60f)) }
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.60f).coerceIn(0.0f, 1.0f)) }
+    
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", false)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
-    
     var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
     var faceRecogEnabled by remember { mutableStateOf(prefs.getBoolean("face_recog_enabled", false)) }
     
@@ -297,56 +249,34 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     if (viewModel.draftCroppedBitmap != null) {
         AlertDialog(
             onDismissRequest = { viewModel.cancelFaceRegistration() },
-            title = { Text("Confirm & Name Face") },
+            title = { Text("Confirm Face") },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                    Image(bitmap = viewModel.draftCroppedBitmap!!.asImageBitmap(), contentDescription = "Cropped Face", modifier = Modifier.size(150.dp).clip(CircleShape))
+                    Image(bitmap = viewModel.draftCroppedBitmap!!.asImageBitmap(), contentDescription = null, modifier = Modifier.size(150.dp).clip(CircleShape))
                     Spacer(modifier = Modifier.height(16.dp))
-                    OutlinedTextField(value = viewModel.draftFaceName, onValueChange = { viewModel.draftFaceName = it }, label = { Text("Person's Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = viewModel.draftFaceName, onValueChange = { viewModel.draftFaceName = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 }
             },
-            confirmButton = { Button(onClick = { viewModel.confirmFaceRegistration(context) }) { Text("Save Face") } },
+            confirmButton = { Button(onClick = { viewModel.confirmFaceRegistration(context) }) { Text("Save") } },
             dismissButton = { TextButton(onClick = { viewModel.cancelFaceRegistration() }) { Text("Cancel") } }
         )
     }
 
-    Scaffold(
-        topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }) }
-    ) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }) }) { padding ->
         Column(modifier = Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState())) {
             
-            Text("Device Role", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Text("Device Role & Sync", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             ExposedDropdownMenuBox(expanded = roleExpanded, onExpandedChange = { roleExpanded = !roleExpanded }) {
-                OutlinedTextField(
-                    value = appRole, onValueChange = {}, readOnly = true, label = { Text("Use this device as:") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = roleExpanded) },
-                    modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                )
+                OutlinedTextField(value = appRole, onValueChange = {}, readOnly = true, label = { Text("Use this device as:") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = roleExpanded) }, modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors())
                 ExposedDropdownMenu(expanded = roleExpanded, onDismissRequest = { roleExpanded = false }) {
-                    listOf("Camera", "Viewer").forEach { mode ->
-                        DropdownMenuItem(text = { Text(mode) }, onClick = { appRole = mode; prefs.edit().putString("app_role", mode).apply(); roleExpanded = false })
-                    }
+                    listOf("Camera", "Viewer").forEach { mode -> DropdownMenuItem(text = { Text(mode) }, onClick = { appRole = mode; prefs.edit().putString("app_role", mode).apply(); roleExpanded = false }) }
                 }
             }
-            
             if (appRole == "Viewer") {
                 Spacer(modifier = Modifier.height(12.dp))
-                Button(
-                    onClick = { 
-                        viewModel.syncToCamera(context, targetIp, securityToken, 
-                            onSuccess = { Toast.makeText(context, "Settings Synced!", Toast.LENGTH_SHORT).show() },
-                            onError = { Toast.makeText(context, "Sync Failed: $it", Toast.LENGTH_LONG).show() }
-                        ) 
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009688)),
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
-                ) {
-                    Text("📡 PUSH SETTINGS TO CAMERA", fontWeight = FontWeight.Bold)
-                }
-                Text("Make sure the Camera device is running before pushing settings.", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.padding(top = 4.dp))
+                Button(onClick = { viewModel.syncToCamera(context, targetIp, securityToken, onSuccess = { Toast.makeText(context, "Settings Synced!", Toast.LENGTH_SHORT).show() }, onError = { Toast.makeText(context, "Sync Failed: $it", Toast.LENGTH_LONG).show() }) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009688)), modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("📡 PUSH SETTINGS TO CAMERA", fontWeight = FontWeight.Bold) }
             }
-            
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
@@ -354,15 +284,9 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Text("Connection & Networking", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             ExposedDropdownMenuBox(expanded = menuExpanded, onExpandedChange = { menuExpanded = !menuExpanded }) {
-                OutlinedTextField(
-                    value = viewerMode, onValueChange = {}, readOnly = true, label = { Text("Routing Protocol") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded) },
-                    modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                )
+                OutlinedTextField(value = viewerMode, onValueChange = {}, readOnly = true, label = { Text("Routing Protocol") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded) }, modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors())
                 ExposedDropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    listOf("Local WiFi", "Firebase").forEach { mode ->
-                        DropdownMenuItem(text = { Text(mode) }, onClick = { viewerMode = mode; prefs.edit().putString("viewer_mode", mode).apply(); menuExpanded = false })
-                    }
+                    listOf("Local WiFi", "Firebase").forEach { mode -> DropdownMenuItem(text = { Text(mode) }, onClick = { viewerMode = mode; prefs.edit().putString("viewer_mode", mode).apply(); menuExpanded = false }) }
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
@@ -370,12 +294,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Auth Token") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
-            if (viewerMode == "Local WiFi") {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            } else if (viewerMode == "Firebase") {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Firebase routing requires your active Google Cloud credentials to relay streams globally.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            if (viewerMode == "Firebase") {
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
@@ -388,8 +307,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Upload a photo. The AI will auto-crop the face. Faces are NOT synced remotely.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            Spacer(modifier = Modifier.height(12.dp))
             Button(onClick = { photoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("📸 Upload Face Photo") }
             if (faces.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
@@ -407,26 +324,26 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Device Alerts & AI Tuning", style = MaterialTheme.typography.titleMedium)
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Popup Notifications", style = MaterialTheme.typography.bodyLarge) }
+                Column(modifier = Modifier.weight(1f)) { Text("Popup Notifications") }
                 Switch(checked = popupNotifications, onCheckedChange = { popupNotifications = it; prefs.edit().putBoolean("enable_notifications", it).apply() })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge) }
+                Column(modifier = Modifier.weight(1f)) { Text("Enable LLM Engine") }
                 Switch(checked = llmEnabled, onCheckedChange = { llmEnabled = it; prefs.edit().putBoolean("llm_enabled", it).apply() })
             }
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Enable Face Recognition", style = MaterialTheme.typography.bodyLarge) }
+                Column(modifier = Modifier.weight(1f)) { Text("Enable Face Recognition") }
                 Switch(checked = faceRecogEnabled, onCheckedChange = { faceRecogEnabled = it; prefs.edit().putBoolean("face_recog_enabled", it).apply() })
-            }
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Verbose Debug Mode", style = MaterialTheme.typography.bodyLarge) }
-                Switch(checked = debugMode, onCheckedChange = { debugMode = it; prefs.edit().putBoolean("debug_mode", it).apply() })
             }
             
             Spacer(modifier = Modifier.height(16.dp))
             Text("Analyze 1 frame every: ${scanInterval.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
             Slider(value = scanInterval, onValueChange = { scanInterval = it }, onValueChangeFinished = { prefs.edit().putFloat("scan_interval_sec", scanInterval).apply() }, valueRange = 1f..60f)
             
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Record Video on Alert for: ${videoRecordLen.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
+            Slider(value = videoRecordLen, onValueChange = { videoRecordLen = it }, onValueChangeFinished = { prefs.edit().putFloat("video_record_len", videoRecordLen).apply() }, valueRange = 5f..60f)
+
             Spacer(modifier = Modifier.height(24.dp))
             Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
@@ -442,24 +359,13 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             Text("Current model loaded: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
-            Button(
-                onClick = { filePicker.launch(arrayOf("*/*")) }, 
-                modifier = Modifier.fillMaxWidth(), 
-                enabled = !viewModel.isImporting && !viewModel.isDownloading,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-            ) { 
-                Text(if (viewModel.isImporting) "Loading Local Model..." else "📁 Import Model from Device (.litertlm)") 
+            Button(onClick = { filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.isImporting, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { 
+                Text("📁 Import Model from Device (.litertlm)") 
             }
             Spacer(modifier = Modifier.height(8.dp))
-            Button(
-                onClick = { viewModel.downloadCloudModel(context) }, 
-                modifier = Modifier.fillMaxWidth(), 
-                enabled = !viewModel.isImporting && !viewModel.isDownloading,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
-            ) { 
-                Text(if (viewModel.isDownloading) "Downloading Model: ${viewModel.downloadProgress}%" else "☁️ Download Gemma-4-E2B Cloud Model") 
+            Button(onClick = { viewModel.downloadCloudModel(context) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))) { 
+                Text("☁️ Download Gemma-4-E2B via Android Manager") 
             }
-
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
