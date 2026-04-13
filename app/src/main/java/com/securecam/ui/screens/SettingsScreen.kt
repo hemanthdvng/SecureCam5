@@ -13,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -99,7 +100,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
 
-    // RESTORED: Custom Prompt State Variables
     var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
     var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
 
@@ -119,20 +119,39 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     ) { padding ->
         Column(modifier = Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState())) {
             
-            Text("Connection Mode", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            // --- UI LOCK: Connection Mode ---
+            Text("Connection Mode & Endpoint", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                FilterChip(
-                    selected = viewerMode == "Firebase",
+            
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
                     onClick = { viewerMode = "Firebase"; prefs.edit().putString("viewer_mode", "Firebase").apply() },
-                    label = { Text("Firebase (Cloud)") }
-                )
-                FilterChip(
-                    selected = viewerMode == "Local WiFi",
+                    colors = ButtonDefaults.buttonColors(containerColor = if (viewerMode == "Firebase") MaterialTheme.colorScheme.primary else Color.DarkGray),
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text("☁️ Firebase")
+                }
+                Button(
                     onClick = { viewerMode = "Local WiFi"; prefs.edit().putString("viewer_mode", "Local WiFi").apply() },
-                    label = { Text("Local WiFi (Off-Grid)") }
-                )
+                    colors = ButtonDefaults.buttonColors(containerColor = if (viewerMode == "Local WiFi") MaterialTheme.colorScheme.primary else Color.DarkGray),
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text("🏠 Local WiFi")
+                }
             }
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            // IP Box is permanently anchored to the screen
+            OutlinedTextField(
+                value = targetIp,
+                onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() },
+                label = { Text(if (viewerMode == "Local WiFi") "Camera IP Address (e.g. 192.168.1.5)" else "IP Field Disabled (Firebase Active)") },
+                enabled = viewerMode == "Local WiFi",
+                modifier = Modifier.fillMaxWidth()
+            )
             
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(
@@ -143,24 +162,15 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 modifier = Modifier.fillMaxWidth()
             )
             
-            if (viewerMode == "Local WiFi") {
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = targetIp,
-                    onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() },
-                    label = { Text("Camera IP Address (e.g. 192.168.1.5)") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                Spacer(modifier = Modifier.height(24.dp))
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(24.dp))
-                Text("Firebase Credentials", style = MaterialTheme.typography.titleMedium)
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth())
-            }
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text("Firebase Credentials", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth(), enabled = viewerMode == "Firebase")
+            OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), enabled = viewerMode == "Firebase")
+            OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth(), enabled = viewerMode == "Firebase")
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
@@ -190,17 +200,19 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             }
             
             Spacer(modifier = Modifier.height(16.dp))
+            
+            // --- UI LOCK: Hardware Acceleration ---
             Text("Hardware Acceleration", style = MaterialTheme.typography.titleMedium)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("CPU", "GPU", "NPU").forEach { backend ->
-                    FilterChip(
-                        selected = aiBackend == backend,
-                        onClick = { 
-                            aiBackend = backend
-                            prefs.edit().putString("ai_backend", backend).apply()
-                        },
-                        label = { Text(backend) }
-                    )
+                    Button(
+                        onClick = { aiBackend = backend; prefs.edit().putString("ai_backend", backend).apply() },
+                        colors = ButtonDefaults.buttonColors(containerColor = if (aiBackend == backend) MaterialTheme.colorScheme.primary else Color.DarkGray),
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(backend)
+                    }
                 }
             }
 
@@ -218,7 +230,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
             Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.0f..1.0f, steps = 100)
 
-            // RESTORED: Custom Prompts and File Picker
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
