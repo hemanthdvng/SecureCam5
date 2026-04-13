@@ -64,7 +64,10 @@ class SettingsViewModel @Inject constructor(
                 context.contentResolver.openInputStream(uri)?.use { input -> destFile.outputStream().use { output -> input.copyTo(output) } }
                 context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
                 currentModelName = fileName
-            } catch (e: Exception) {} finally { isImporting = false }
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Model $fileName Loaded!", Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Import Failed: ${e.message}", Toast.LENGTH_LONG).show() }
+            } finally { isImporting = false }
         }
     }
 }
@@ -90,10 +93,19 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.85f)) }
     var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", true)) }
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
+    var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
     
     var fbDbUrl by remember { mutableStateOf(prefs.getString("fb_db_url", "") ?: "") }
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
+
+    // RESTORED: Custom Prompt State Variables
+    var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
+    var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
+
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.importModel(it, context) }
+    }
 
     LaunchedEffect(Unit) { viewModel.loadPrefs(context) }
 
@@ -165,6 +177,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Enable LLM Security Engine", style = MaterialTheme.typography.bodyLarge)
+                    Text("Current model: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(checked = llmEnabled, onCheckedChange = { viewModel.toggleLlm(it) })
             }
@@ -175,13 +188,29 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 }
                 Switch(checked = debugMode, onCheckedChange = { debugMode = it; prefs.edit().putBoolean("debug_mode", it).apply() })
             }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Hardware Acceleration", style = MaterialTheme.typography.titleMedium)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                listOf("CPU", "GPU", "NPU").forEach { backend ->
+                    FilterChip(
+                        selected = aiBackend == backend,
+                        onClick = { 
+                            aiBackend = backend
+                            prefs.edit().putString("ai_backend", backend).apply()
+                        },
+                        label = { Text(backend) }
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
             
-            Text("AI Tuning", style = MaterialTheme.typography.titleMedium)
+            Text("AI Tuning & Polling", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
+            
             Text("Analyze 1 frame every: ${scanInterval.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
             Slider(value = scanInterval, onValueChange = { scanInterval = it }, onValueChangeFinished = { prefs.edit().putFloat("scan_interval_sec", scanInterval).apply() }, valueRange = 1f..60f, steps = 58)
 
@@ -189,6 +218,26 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Text("Alert Confidence Threshold: ${(confidenceThreshold * 100).roundToInt()}%", style = MaterialTheme.typography.bodyMedium)
             Slider(value = confidenceThreshold, onValueChange = { confidenceThreshold = it }, onValueChangeFinished = { prefs.edit().putFloat("confidence_threshold", confidenceThreshold).apply() }, valueRange = 0.0f..1.0f, steps = 100)
 
+            // RESTORED: Custom Prompts and File Picker
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text("Custom AI Prompts", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            OutlinedTextField(value = sysPrompt, onValueChange = { sysPrompt = it; prefs.edit().putString("prompt_sys", it).apply() }, label = { Text("System Prompt") }, modifier = Modifier.fillMaxWidth())
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt") }, modifier = Modifier.fillMaxWidth())
+
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = { filePicker.launch(arrayOf("*/*")) }, 
+                modifier = Modifier.fillMaxWidth(), 
+                enabled = !viewModel.isImporting
+            ) {
+                Text(if (viewModel.isImporting) "Loading Model..." else "Select New Model")
+            }
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
