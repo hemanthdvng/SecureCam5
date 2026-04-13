@@ -29,10 +29,6 @@ class HybridAIPipeline @Inject constructor(
     private val llmAnalyzer = LlmVisionAnalyzer(context)
     private val biometricEngine = BiometricEngine(context)
     
-    // CRITICAL BUG 4 FIX: Instantiate expensive FaceDetector once, not per frame
-    private val faceDetectorOptions = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
-    private val faceDetector = FaceDetection.getClient(faceDetectorOptions)
-    
     private var isLlmBusy = false
     private var isLlmInitialized = false
     private var firstFrameReceived = false
@@ -42,15 +38,16 @@ class HybridAIPipeline @Inject constructor(
         llmAnalyzer.initialize { result -> 
             isLlmInitialized = (result is LlmVisionAnalyzer.InitResult.Success) 
             aiScope.launch {
-                if (isLlmInitialized) eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Engine Initialized & Online.", 1.0f))
+                if (isLlmInitialized) {
+                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Engine Initialized & Online.", 1.0f))
+                } else {
+                    eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Failed to load. Check your .litertlm file.", 1.0f))
+                }
             }
         }
         aiScope.launch {
-            try {
-                biometricEngine.initialize()
-            } catch (e: Exception) {
-                eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Init Error: ${e.message}", 1.0f))
-            }
+            try { biometricEngine.initialize() } 
+            catch (e: Exception) { eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Biometric Init Error: ${e.message}", 1.0f)) }
         }
     }
 
@@ -70,7 +67,7 @@ class HybridAIPipeline @Inject constructor(
                     eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] Camera heartbeat established. AI is receiving live frames.", 1.0f))
                 }
 
-                // CRITICAL BUG 3 FIX: Decoupled entirely from DataStore. Unified state by reading directly from SharedPreferences.
+                // CRITICAL FIX: Reads directly from SharedPreferences on every frame so UI Sync works instantly
                 val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                 val isFaceRecogEnabledSetting = prefs.getBoolean("face_recog_enabled", false)
                 val isLlmEnabledSetting = prefs.getBoolean("llm_enabled", true)
@@ -80,7 +77,9 @@ class HybridAIPipeline @Inject constructor(
                 if (isFaceRecogEnabledSetting) {
                     try {
                         val inputImage = InputImage.fromBitmap(bitmap, 0)
-                        val facesList = faceDetector.process(inputImage).await()
+                        val options = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
+                        val detector = FaceDetection.getClient(options)
+                        val facesList = detector.process(inputImage).await()
 
                         if (facesList.isNotEmpty()) {
                             val savedFacesJson = prefs.getString("authorized_faces", "[]") ?: "[]"
@@ -147,7 +146,6 @@ class HybridAIPipeline @Inject constructor(
         isLlmBusy = true
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val confThreshold = prefs.getFloat("confidence_threshold", 0.60f)
-        val debugMode = prefs.getBoolean("debug_mode", false)
         
         val basePrompt = prefs.getString("prompt_sys", "You are an AI security camera. Answer the user's prompt based ONLY on the image provided.") ?: ""
         val usrPrompt = prefs.getString("prompt_usr", "Report if you see any clock.") ?: ""
@@ -166,16 +164,25 @@ class HybridAIPipeline @Inject constructor(
                             val output = text.trim()
                             val isSafe = output.equals("CLEAR", ignoreCase = true) || output.contains("[STATUS_SAFE]", ignoreCase = true)
                             
-                            if (!isSafe || debugMode) {
-                                aiScope.launch {
-                                    val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Trigger found" else "🚨 $output"
-                                    eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
+                            // CRITICAL FIX: The LLM will ALWAYS emit its scan result to the UI so you can visually confirm it is working. 
+                            // EventRepository safely handles ignoring "Safe" scans for the Database logging.
+                            aiScope.launch {
+                                val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Trigger found" else "🚨 $output"
+                                eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
+                                
+                                if (!isSafe) {
+                                    val dbUrl = prefs.getString("fb_db_url", "") ?: ""
+                                    val token = prefs.getString("security_token", "") ?: ""
+                                    if (dbUrl.isNotBlank() && token.isNotBlank()) {
+                                        com.google.firebase.database.FirebaseDatabase.getInstance()
+                                            .getReference("securecam/alerts/$token").push()
+                                            .setValue(mapOf("timestamp" to System.currentTimeMillis(), "text" to output))
+                                    }
                                 }
                             }
                             if (continuation.isActive) continuation.resume(true)
                         },
                         onError = { err -> 
-                            // CRITICAL BUG 5 FIX: Suppress the persistent "busy" error log so it doesn't flood the UI
                             if (!err.contains("busy", ignoreCase = true)) {
                                 aiScope.launch { eventRepository.emitEvent(SecurityEvent("SYSTEM", "[SYSTEM] LLM Error: $err", 1.0f)) }
                             }
@@ -184,7 +191,11 @@ class HybridAIPipeline @Inject constructor(
                     )
                 }
             }
-            if (result == null) eventRepository.emitEvent(SecurityEvent("SYSTEM", "🚨 [SYSTEM] LLM Hardware Timed Out!", 1.0f))
+            
+            if (result == null) {
+                eventRepository.emitEvent(SecurityEvent("SYSTEM", "🚨 [SYSTEM] LLM Hardware Timed Out! Resetting engine lock.", 1.0f))
+            }
+
         } finally {
             isLlmBusy = false
             if (!bitmap.isRecycled) bitmap.recycle()
