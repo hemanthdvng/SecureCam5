@@ -13,6 +13,8 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import kotlin.math.sqrt
 
+data class RegisteredFace(val id: String, val name: String, val vector: FloatArray)
+
 class BiometricEngine(private val context: Context) {
     private var interpreter: Interpreter? = null
     private val IMAGE_SIZE = 112
