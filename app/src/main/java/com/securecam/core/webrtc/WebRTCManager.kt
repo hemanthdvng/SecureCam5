@@ -28,15 +28,27 @@ open class SimplePeerConnectionObserver : PeerConnection.Observer {
 }
 
 class WebRTCManager(private val context: Context) {
+    
+    // FIX 1: Lock initialization to a static companion object so it only fires ONCE per app launch
+    companion object {
+        private var isInitialized = false
+        fun initWebRTC(context: Context) {
+            if (!isInitialized) {
+                val initOptions = PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
+                    .setEnableInternalTracer(true)
+                    .createInitializationOptions()
+                PeerConnectionFactory.initialize(initOptions)
+                isInitialized = true
+            }
+        }
+    }
+
     val rootEglBase: EglBase = EglBase.create()
     var peerConnectionFactory: PeerConnectionFactory? = null
     var videoCapturer: CameraVideoCapturer? = null
 
     init {
-        val initOptions = PeerConnectionFactory.InitializationOptions.builder(context)
-            .setEnableInternalTracer(true)
-            .createInitializationOptions()
-        PeerConnectionFactory.initialize(initOptions)
+        initWebRTC(context)
 
         val options = PeerConnectionFactory.Options()
         val encoderFactory = DefaultVideoEncoderFactory(rootEglBase.eglBaseContext, true, true)
@@ -65,8 +77,8 @@ class WebRTCManager(private val context: Context) {
         
         val surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", rootEglBase.eglBaseContext)
         val videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
-        videoCapturer!!.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
-        videoCapturer!!.startCapture(640, 480, 30)
+        videoCapturer?.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
+        videoCapturer?.startCapture(640, 480, 30)
 
         val videoTrack = peerConnectionFactory?.createVideoTrack("video_track", videoSource)
         videoTrack?.addSink(renderer)
