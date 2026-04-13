@@ -73,13 +73,12 @@ fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hilt
         var showVault by remember { mutableStateOf(false) }
         
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-        val viewerMode = prefs.getString("viewer_mode", "Firebase")
+        val viewerMode = prefs.getString("viewer_mode", "Local WiFi")
         val securityToken = prefs.getString("security_token", "") ?: ""
 
         var fbClient: FirebaseSignalingClient? = null
         var localClient: LocalSignalingClient? = null
 
-        // Syncs background Service alerts & active WebRTC alerts dynamically into the UI List
         LaunchedEffect(Unit) {
             var lastAlert = ""
             var lastTime = 0L
@@ -131,7 +130,7 @@ fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hilt
                                 val bytes = ByteArray(byteBuffer.remaining())
                                 byteBuffer.get(bytes)
                                 val text = String(bytes, Charsets.UTF_8)
-                                CoroutineScope(Dispatchers.IO).launch {
+                                CoroutineScope(Dispatchers.Main).launch {
                                     viewModel.eventRepository.emitEvent(SecurityEvent("WEBRTC", text, 1.0f))
                                 }
                             }
@@ -246,7 +245,7 @@ fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hilt
                     
                     LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                         items(alertHistory) { alert ->
-                            val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]")
+                            val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]") || alert.contains("Authorized Face")
                             val isSystem = alert.contains("[SYSTEM]")
                             val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
                             Card(
@@ -295,15 +294,31 @@ fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hilt
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
                             ) { Text("🔄", fontSize = 24.sp) }
                             Button(
-                                onClick = { sendCommand("CMD_FORCE_SCAN") }, 
-                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF388E3C))
-                            ) { Text("🔍", fontSize = 24.sp) }
-                            Button(
                                 onClick = { showVault = true }, 
                                 shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
                             ) { Text("🎞️", fontSize = 24.sp) }
+                            
+                            Button(
+                                onClick = { 
+                                    val syncData = mapOf(
+                                        "type" to "SYNC_SETTINGS",
+                                        "scan_interval_sec" to prefs.getFloat("scan_interval_sec", 5f),
+                                        "confidence_threshold" to prefs.getFloat("confidence_threshold", 0.85f),
+                                        "prompt_sys" to prefs.getString("prompt_sys", ""),
+                                        "prompt_usr" to prefs.getString("prompt_usr", ""),
+                                        "llm_enabled" to prefs.getBoolean("llm_enabled", true),
+                                        "face_recog_enabled" to prefs.getBoolean("face_recog_enabled", true)
+                                    )
+                                    sendCommand(Gson().toJson(syncData))
+                                    CoroutineScope(Dispatchers.Main).launch {
+                                        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                                        alertHistory.add(0, "[$timeStr] [SYSTEM] Pushed local settings to Camera.")
+                                    }
+                                }, 
+                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009688))
+                            ) { Text("📡", fontSize = 24.sp) }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
