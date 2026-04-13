@@ -25,7 +25,6 @@ import androidx.navigation.NavController
 fun MainScreen(navController: NavController) {
     val context = LocalContext.current
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-    
     var appRole by remember { mutableStateOf(prefs.getString("app_role", null)) }
     var showHelp by remember { mutableStateOf(false) }
 
@@ -40,26 +39,17 @@ fun MainScreen(navController: NavController) {
 
     if (appRole == null) {
         Scaffold { padding ->
-            Column(
-                modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            Column(modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Welcome to SecureCam", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("To begin, how do you want to use this specific device?", textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(modifier = Modifier.height(48.dp))
-
                 ElevatedCard(onClick = { appRole = "Camera"; prefs.edit().putString("app_role", "Camera").apply() }, modifier = Modifier.fillMaxWidth().height(100.dp)) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        Text("📷 Use as Camera Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    }
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) { Text("📷 Use as Camera Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 ElevatedCard(onClick = { appRole = "Viewer"; prefs.edit().putString("app_role", "Viewer").apply() }, modifier = Modifier.fillMaxWidth().height(100.dp)) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        Text("👁️ Use as Viewer Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    }
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) { Text("👁️ Use as Viewer Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
                 }
             }
         }
@@ -70,12 +60,7 @@ fun MainScreen(navController: NavController) {
         AlertDialog(
             onDismissRequest = { showHelp = false },
             title = { Text("How to use SecureCam") },
-            text = {
-                Text("SecureCam uses two devices to create a private security network.\n\n" +
-                    "1. CAMERA DEVICE:\nPlace your old phone in the room and open 'Camera Mode'. It will analyze the room using AI.\n\n" +
-                    "2. VIEWER DEVICE:\nUse your main phone and open 'Viewer Mode' to watch the live feed.\n\n" +
-                    "SYNCING:\nGo to Settings on your Viewer device, adjust your AI Prompts or Face Recognition, and click 'Sync Settings to Camera' to push your rules remotely over Wi-Fi.")
-            },
+            text = { Text("SecureCam uses two devices to create a private security network.\n\n1. CAMERA DEVICE:\nPlace your old phone in the room and open 'Camera Mode'. It will analyze the room using AI.\n\n2. VIEWER DEVICE:\nUse your main phone and open 'Viewer Mode' to watch the live feed.\n\nSYNCING:\nGo to Settings on your Viewer device, adjust your AI Prompts or Face Recognition, and click 'Sync Settings to Camera' to push your rules remotely over Wi-Fi.") },
             confirmButton = { TextButton(onClick = { showHelp = false }) { Text("Got it") } }
         )
     }
