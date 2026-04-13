@@ -224,6 +224,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Report if you see any clock.") ?: "") }
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { viewModel.processFaceRegistration(it, context) } }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { viewModel.importModel(it, context) } }
 
     LaunchedEffect(Unit) { viewModel.loadPrefs(context) }
 
@@ -303,6 +304,19 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Auth Token") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
             
+            // RESTORED UI DESCRIPTIONS
+            if (viewerMode == "Local WiFi") {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices to access the camera securely from anywhere in the world. This keeps your stream direct and private without needing third-party cloud servers.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else if (viewerMode == "Firebase") {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Firebase routing requires your active Google Cloud credentials to relay streams globally.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(value = fbDbUrl, onValueChange = { fbDbUrl = it; prefs.edit().putString("fb_db_url", it).apply() }, label = { Text("Database URL") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = fbApiKey, onValueChange = { fbApiKey = it; prefs.edit().putString("fb_api_key", it).apply() }, label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = fbAppId, onValueChange = { fbAppId = it; prefs.edit().putString("fb_app_id", it).apply() }, label = { Text("App ID") }, modifier = Modifier.fillMaxWidth())
+            }
+            
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
@@ -355,6 +369,23 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedTextField(value = usrPrompt, onValueChange = { usrPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("User Prompt (Custom Trigger)") }, modifier = Modifier.fillMaxWidth())
 
+            // EXPLICIT LLM UPLOAD BUTTON
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+            Text("Local LLM Model", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Current model loaded: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = { filePicker.launch(arrayOf("*/*")) }, 
+                modifier = Modifier.fillMaxWidth(), 
+                enabled = !viewModel.isImporting,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+            ) { 
+                Text(if (viewModel.isImporting) "Loading Model into Vault..." else "Select New Model (.litertlm)") 
+            }
+            
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
