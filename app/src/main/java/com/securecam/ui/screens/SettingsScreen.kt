@@ -1,6 +1,7 @@
 package com.securecam.ui.screens
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
@@ -9,8 +10,10 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,16 +29,21 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
-import com.canhub.cropper.CropImageContract
-import com.canhub.cropper.CropImageContractOptions
-import com.canhub.cropper.CropImageOptions
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
+import kotlinx.coroutines.tasks.await
 import com.securecam.core.ai.BiometricEngine
 import com.securecam.core.ai.HybridAIPipeline
+import com.securecam.core.ai.RegisteredFace
 import com.securecam.data.repository.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -56,13 +64,27 @@ class SettingsViewModel @Inject constructor(
         private set
     var currentModelName by mutableStateOf("None")
 
+    private val _registeredFaces = MutableStateFlow<List<RegisteredFace>>(emptyList())
+    val registeredFaces = _registeredFaces.asStateFlow()
+
     fun loadPrefs(context: Context) {
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         currentModelName = prefs.getString("selected_model", "None") ?: "None"
+        
+        val json = prefs.getString("authorized_faces", "[]") ?: "[]"
+        val type = object : TypeToken<List<RegisteredFace>>() {}.type
+        _registeredFaces.value = Gson().fromJson(json, type) ?: emptyList()
     }
 
     fun toggleLlm(enabled: Boolean) { viewModelScope.launch { repository.setLlmEnabled(enabled) } }
     fun toggleFaceRecog(enabled: Boolean) { viewModelScope.launch { repository.setFaceRecogEnabled(enabled) } }
+
+    fun removeFace(context: Context, id: String) {
+        val updated = _registeredFaces.value.filter { it.id != id }
+        _registeredFaces.value = updated
+        val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("authorized_faces", Gson().toJson(updated)).apply()
+    }
 
     fun importModel(uri: Uri, context: Context) {
         isImporting = true
@@ -83,38 +105,67 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun processFaceRegistration(uri: Uri, context: Context, onComplete: (Boolean) -> Unit) {
+    fun processFaceRegistration(uri: Uri, context: Context) {
         viewModelScope.launch(Dispatchers.IO) {
-            withContext(Dispatchers.Main) { Toast.makeText(context, "Initializing Model (May take a moment to download)...", Toast.LENGTH_LONG).show() }
-            val biometricEngine = BiometricEngine(context)
-            biometricEngine.initialize()
+            withContext(Dispatchers.Main) { Toast.makeText(context, "Scanning for face...", Toast.LENGTH_SHORT).show() }
+            
             try {
-                val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri))
+                var bmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ ->
+                        decoder.isMutableRequired = true
+                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    }
                 } else {
                     MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
                 }
+
+                // Scale down to avoid OOM
+                if (bmp.width > 1500 || bmp.height > 1500) {
+                    val scale = 1500f / maxOf(bmp.width, bmp.height)
+                    bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
+                }
+
+                val inputImage = InputImage.fromBitmap(bmp, 0)
+                val options = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
+                val detector = FaceDetection.getClient(options)
+                val facesList = detector.process(inputImage).await()
+
+                if (facesList.isEmpty()) {
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "No face found. Try a clearer photo.", Toast.LENGTH_LONG).show() }
+                    return@launch
+                }
+
+                val bounds = facesList.first().boundingBox
+                val size = maxOf(bounds.width(), bounds.height())
+                var left = bounds.centerX() - size / 2
+                var top = bounds.centerY() - size / 2
                 
-                val copyBmp = bitmap.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
-                val embedding = biometricEngine.getFaceEmbedding(copyBmp)
-                
+                left = left.coerceAtLeast(0)
+                top = top.coerceAtLeast(0)
+                val w = minOf(size, bmp.width - left)
+                val h = minOf(size, bmp.height - top)
+
+                val croppedBmp = Bitmap.createBitmap(bmp, left, top, w, h)
+
+                val biometricEngine = BiometricEngine(context)
+                biometricEngine.initialize()
+                val embedding = biometricEngine.getFaceEmbedding(croppedBmp)
+                biometricEngine.close()
+
                 if (embedding != null) {
+                    val newFace = RegisteredFace(UUID.randomUUID().toString(), "Face ${registeredFaces.value.size + 1}", embedding)
+                    val updatedList = registeredFaces.value + newFace
+                    
                     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-                    prefs.edit().putString("authorized_face_vector", Gson().toJson(embedding)).apply()
-                    withContext(Dispatchers.Main) { 
-                        Toast.makeText(context, "Face Registered Successfully!", Toast.LENGTH_LONG).show() 
-                        onComplete(true)
-                    }
+                    prefs.edit().putString("authorized_faces", Gson().toJson(updatedList)).apply()
+                    _registeredFaces.value = updatedList
+                    
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Face added successfully!", Toast.LENGTH_SHORT).show() }
                 } else {
-                    withContext(Dispatchers.Main) { 
-                        Toast.makeText(context, "Could not extract face data.", Toast.LENGTH_LONG).show() 
-                        onComplete(false)
-                    }
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Could not extract features.", Toast.LENGTH_SHORT).show() }
                 }
             } catch(e: Exception) {
-                withContext(Dispatchers.Main) { onComplete(false) }
-            } finally {
-                biometricEngine.close()
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show() }
             }
         }
     }
@@ -125,6 +176,8 @@ class SettingsViewModel @Inject constructor(
 fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = hiltViewModel()) {
     val llmEnabled by viewModel.isLlmEnabled.collectAsState()
     val faceRecogEnabled by viewModel.isFaceRecogEnabled.collectAsState()
+    val faces by viewModel.registeredFaces.collectAsState()
+    
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
@@ -149,17 +202,9 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
     var sysPrompt by remember { mutableStateOf(prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: "") }
     var usrPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Describe what you see in this camera frame from a security perspective.") ?: "") }
-    
-    var hasRegisteredFace by remember { mutableStateOf((prefs.getString("authorized_face_vector", "") ?: "").isNotBlank()) }
 
-    val cropImageLauncher = rememberLauncherForActivityResult(CropImageContract()) { result ->
-        if (result.isSuccessful) {
-            result.uriContent?.let { uri ->
-                viewModel.processFaceRegistration(uri, context) { success ->
-                    hasRegisteredFace = success
-                }
-            }
-        }
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> 
+        uri?.let { viewModel.processFaceRegistration(it, context) }
     }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> 
@@ -195,35 +240,28 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Upload a photo of your face. You will be prompted to crop it to a tight square. The AI will extract the facial vector and store it offline.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Upload any photo containing your face. The AI will automatically detect the face, crop it, and store its vector offline.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
             
             Button(
-                onClick = { 
-                    cropImageLauncher.launch(
-                        CropImageContractOptions(
-                            uri = null,
-                            cropImageOptions = CropImageOptions(
-                                imageSourceIncludeCamera = true,
-                                imageSourceIncludeGallery = true,
-                                fixAspectRatio = true,
-                                aspectRatioX = 1,
-                                aspectRatioY = 1
-                            )
-                        )
-                    )
-                }, 
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = if (hasRegisteredFace) Color(0xFF388E3C) else MaterialTheme.colorScheme.primary)
+                onClick = { photoPicker.launch("image/*") }, 
+                modifier = Modifier.fillMaxWidth()
             ) { 
-                Text(if (hasRegisteredFace) "✅ Authorized Face Registered (Tap to Replace)" else "📸 Upload Face Photo") 
+                Text("📸 Upload Face Photo") 
             }
-            if (hasRegisteredFace) {
-                TextButton(onClick = { 
-                    prefs.edit().remove("authorized_face_vector").apply()
-                    hasRegisteredFace = false
-                }, modifier = Modifier.align(Alignment.End)) {
-                    Text("Clear Biometrics", color = Color.Red)
+            
+            if (faces.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                faces.forEach { face ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).background(Color(0xFF2C2C2C), RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(face.name, modifier = Modifier.weight(1f), color = Color.White)
+                        IconButton(onClick = { viewModel.removeFace(context, face.id) }) {
+                            Text("🗑️", color = Color.Red)
+                        }
+                    }
                 }
             }
 
