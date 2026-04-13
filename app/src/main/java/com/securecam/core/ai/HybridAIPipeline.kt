@@ -51,6 +51,22 @@ class HybridAIPipeline @Inject constructor(
         }
     }
 
+    private fun dispatchFirebaseAlert(description: String) {
+        aiScope.launch(Dispatchers.IO) {
+            try {
+                val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
+                val dbUrl = prefs.getString("fb_db_url", "") ?: ""
+                val token = prefs.getString("security_token", "") ?: ""
+                
+                if (dbUrl.isNotBlank() && token.isNotBlank()) {
+                    val db = com.google.firebase.database.FirebaseDatabase.getInstance()
+                    val payload = mapOf("timestamp" to System.currentTimeMillis(), "text" to description)
+                    db.getReference("securecam/alerts/$token").push().setValue(payload)
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
     private suspend fun triggerLlmAnalysis(bitmap: Bitmap) {
         isLlmBusy = true
         
@@ -60,9 +76,8 @@ class HybridAIPipeline @Inject constructor(
         val percentReq = (confThreshold * 100).toInt()
         
         val basePrompt = prefs.getString("prompt_sys", "You are a security camera AI assistant. Provide brief, factual security observations.") ?: ""
-        
-        // PERSONA FILTER: Inject authorized faces to prevent false positives
         val knownPersons = prefs.getString("known_persons", "") ?: ""
+        
         val personaRule = if (knownPersons.isNotBlank()) {
             "AUTHORIZED PERSONNEL: $knownPersons. If you only see these authorized individuals, reply EXACTLY '[STATUS_SAFE]'. "
         } else ""
@@ -92,6 +107,9 @@ class HybridAIPipeline @Inject constructor(
                             aiScope.launch {
                                 val finalDesc = if (isSafe) "🔍 SCAN: Safe / Authorized Personnel" else "🚨 $output"
                                 eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold))
+                                if (!isSafe) {
+                                    dispatchFirebaseAlert(output)
+                                }
                             }
                         }
                         if (continuation.isActive) continuation.resume(Unit)
