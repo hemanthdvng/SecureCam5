@@ -334,6 +334,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                             (map["prompt_usr"] as? String)?.let { putString("prompt_usr", it) }
                             (map["llm_enabled"] as? Boolean)?.let { putBoolean("llm_enabled", it) }
                             (map["face_recog_enabled"] as? Boolean)?.let { putBoolean("face_recog_enabled", it) }
+                            (map["authorized_faces"] as? String)?.let { putString("authorized_faces", it) }
                         }.apply()
                         CoroutineScope(Dispatchers.Main).launch {
                             scanIntervalMs = ((map["scan_interval_sec"] as? Double)?.toFloat() ?: 5f).toLong() * 1000
