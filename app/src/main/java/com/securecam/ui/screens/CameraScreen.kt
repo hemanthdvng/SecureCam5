@@ -30,6 +30,7 @@ import com.securecam.core.ai.HybridAIPipeline
 import com.securecam.core.network.DvrEngine
 import com.securecam.core.network.LocalSignalingServer
 import com.securecam.core.network.MjpegServer
+import com.securecam.core.network.LocalApiServer
 import com.securecam.core.webrtc.*
 import com.securecam.data.repository.EventRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -112,6 +113,9 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val securityToken = remember { prefs.getString("security_token", "") ?: "" }
         val localServer = remember { LocalSignalingServer(8081, securityToken) }
 
+        // CRITICAL FIX: Turn on the actual API server so remote fetching works
+        val apiServer = remember { LocalApiServer(8082, securityToken, context) }
+        
         val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
         
         var isTorchOn by remember { mutableStateOf(false) }
@@ -154,7 +158,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
-        // 5 FPS VIDEO LOOP
         LaunchedEffect(Unit) {
             while(isActive) {
                 try {
@@ -174,7 +177,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
-        // AI SLIDER POLLING LOOP
         LaunchedEffect(forceScanTrigger, scanIntervalMs) {
             while(isActive) {
                 delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
@@ -201,7 +203,8 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 alertHistory.add(0, "[$timeStr] $text")
                 if (alertHistory.size > 50) alertHistory.removeLast()
                 
-                val isSafe = text.contains("CLEAR") || text.contains("[STATUS_SAFE]") || event.type == "BIOMETRIC"
+                // CRITICAL FIX: Color mapping. "Safe" is safe. "CLEAR" is safe. Authorized faces are safe.
+                val isSafe = text.contains("Safe", ignoreCase = true) || text.contains("CLEAR", ignoreCase = true) || event.type == "BIOMETRIC"
                 
                 if (!isSafe && !text.contains("[SYSTEM]")) {
                     dvrEngine.triggerRecording()
@@ -220,6 +223,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         DisposableEffect(Unit) {
             viewModel.aiPipeline.start()
             mjpegServer.start(8080, securityToken)
+            try { apiServer.start() } catch (e: Exception) {}
             
             val rtcManager = WebRTCManager(context).apply { initRenderer(localRenderer) }
             
@@ -266,7 +270,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                 prefs.edit().apply {
                                     putFloat("scan_interval_sec", (map["scan_interval_sec"] as Double).toFloat())
                                     putFloat("confidence_threshold", (map["confidence_threshold"] as Double).toFloat())
-                                    putString("prompt_sys", map["prompt_sys"] as? String ?: "")
                                     putString("prompt_usr", map["prompt_usr"] as? String ?: "")
                                     putBoolean("llm_enabled", map["llm_enabled"] as? Boolean ?: true)
                                     putBoolean("face_recog_enabled", map["face_recog_enabled"] as? Boolean ?: false)
@@ -341,6 +344,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 isTorchOn = false
                 mjpegServer.stop()
                 localServer.stop()
+                apiServer.stop()
                 dataChannel?.dispose()
                 peerConnection?.dispose()
                 rtcManager.dispose()
@@ -363,9 +367,10 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     items(alertHistory) { alert ->
-                        val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]") || alert.contains("Authorized Face")
+                        val isSafe = alert.contains("Safe", ignoreCase = true) || alert.contains("CLEAR", ignoreCase = true) || alert.contains("Authorized Face")
                         val isSystem = alert.contains("[SYSTEM]")
-                        val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
+                        // CRITICAL FIX: Safe logs are mapped back to Green/Grey so they don't look like threats
+                        val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x884CAF50) else Color(0xCCD32F2F)
                         Card(
                             colors = CardDefaults.cardColors(containerColor = bgColor),
                             modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
