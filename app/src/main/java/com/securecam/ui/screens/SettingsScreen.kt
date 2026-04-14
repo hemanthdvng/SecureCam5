@@ -137,6 +137,7 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                     "type" to "SYNC_SETTINGS",
                     "scan_interval_sec" to prefs.getFloat("scan_interval_sec", 5f).toDouble(),
                     "video_record_len" to prefs.getFloat("video_record_len", 15f).toDouble(),
+                    "llm_resolution" to prefs.getInt("llm_resolution", 280),
                     "confidence_threshold" to prefs.getFloat("confidence_threshold", 0.60f).toDouble(),
                     "prompt_usr" to prefs.getString("prompt_usr", ""),
                     "llm_enabled" to prefs.getBoolean("llm_enabled", true),
@@ -230,13 +231,14 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
     var videoRecordLen by remember { mutableStateOf(prefs.getFloat("video_record_len", 15f).coerceIn(5f, 60f)) }
-    var confidenceThreshold by remember { mutableStateOf(prefs.getFloat("confidence_threshold", 0.60f).coerceIn(0.0f, 1.0f)) }
     
-    var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", false)) }
+    // CRITICAL FIX: Gemma 4 Variable Resolution Token Budget Picker
+    var llmResolution by remember { mutableStateOf(prefs.getInt("llm_resolution", 280)) }
+    var resExpanded by remember { mutableStateOf(false) }
+
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
     var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
     var faceRecogEnabled by remember { mutableStateOf(prefs.getBoolean("face_recog_enabled", false)) }
-    
     var aiPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Report if you see a clock. If you do not see it, reply EXACTLY with CLEAR.") ?: "") }
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { viewModel.processFaceRegistration(it, context) } }
@@ -273,15 +275,12 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             }
             if (appRole == "Viewer") {
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("Make sure the Camera device is running its live stream before pushing settings.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                Spacer(modifier = Modifier.height(8.dp))
                 Button(onClick = { viewModel.syncToCamera(context, targetIp, securityToken, onSuccess = { Toast.makeText(context, "Settings Synced!", Toast.LENGTH_SHORT).show() }, onError = { Toast.makeText(context, "Sync Failed: $it", Toast.LENGTH_LONG).show() }) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009688)), modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("📡 PUSH SETTINGS TO CAMERA", fontWeight = FontWeight.Bold) }
             }
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
-            // CRITICAL FIX: Complete Tailscale and Networking Descriptions
             Text("Connection & Networking", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices and enter the Tailscale IP below to access the camera securely from anywhere in the world.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -311,8 +310,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Upload a photo. The AI will auto-crop the face. Faces are NOT synced remotely, they must be added directly to the Camera device.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            Spacer(modifier = Modifier.height(12.dp))
             Button(onClick = { photoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("📸 Upload Face Photo") }
             if (faces.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
@@ -341,10 +338,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 Column(modifier = Modifier.weight(1f)) { Text("Enable Face Recognition") }
                 Switch(checked = faceRecogEnabled, onCheckedChange = { faceRecogEnabled = it; prefs.edit().putBoolean("face_recog_enabled", it).apply() })
             }
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Verbose Debug Mode", style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
-                Switch(checked = debugMode, onCheckedChange = { debugMode = it; prefs.edit().putBoolean("debug_mode", it).apply() })
-            }
             
             Spacer(modifier = Modifier.height(16.dp))
             Text("Analyze 1 frame every: ${scanInterval.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
@@ -353,6 +346,34 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(16.dp))
             Text("Record Video on Alert for: ${videoRecordLen.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
             Slider(value = videoRecordLen, onValueChange = { videoRecordLen = it }, onValueChangeFinished = { prefs.edit().putFloat("video_record_len", videoRecordLen).apply() }, valueRange = 5f..60f)
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // CRITICAL FIX: Gemma 4 Variable Resolution Token Budget Selector
+            Text("Gemma 4 Vision Resolution (Token Budget)", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Higher tokens (1120) allows the AI to zoom in and detect small objects better. Lower tokens (70) is significantly faster but blurrier.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(8.dp))
+            ExposedDropdownMenuBox(expanded = resExpanded, onExpandedChange = { resExpanded = !resExpanded }) {
+                OutlinedTextField(
+                    value = "$llmResolution Tokens", 
+                    onValueChange = {}, readOnly = true,
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resExpanded) },
+                    modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
+                )
+                ExposedDropdownMenu(expanded = resExpanded, onDismissRequest = { resExpanded = false }) {
+                    listOf(70, 140, 280, 560, 1120).forEach { res ->
+                        DropdownMenuItem(
+                            text = { Text("$res Tokens") }, 
+                            onClick = { 
+                                llmResolution = res
+                                prefs.edit().putInt("llm_resolution", res).apply()
+                                resExpanded = false 
+                            }
+                        )
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
             Text("AI Vision Prompt", style = MaterialTheme.typography.titleMedium)
@@ -373,8 +394,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 Text("📁 Import Model from Device (.litertlm)") 
             }
             Spacer(modifier = Modifier.height(8.dp))
-            
-            // CRITICAL FIX: Cleaner Button Text as requested
             Button(onClick = { viewModel.downloadCloudModel(context) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))) { 
                 Text("☁️ Download AI Model") 
             }
