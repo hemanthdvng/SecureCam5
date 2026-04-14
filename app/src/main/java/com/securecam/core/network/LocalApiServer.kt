@@ -49,7 +49,11 @@ class LocalApiServer(port: Int, val token: String, val context: Context) : NanoH
             }
             "/api/video" -> { 
                 val f = File(context.filesDir, session.parameters["file"]?.firstOrNull() ?: "")
-                if (f.exists()) newChunkedResponse(Response.Status.OK, "video/mp4", FileInputStream(f)) 
+                if (f.exists()) {
+                    val res = newFixedLengthResponse(Response.Status.OK, "video/mp4", FileInputStream(f), f.length())
+                    res.addHeader("Accept-Ranges", "bytes")
+                    return res
+                } 
                 else newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "404") 
             }
             else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "404")
