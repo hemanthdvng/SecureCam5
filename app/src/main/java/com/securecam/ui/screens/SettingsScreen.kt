@@ -138,7 +138,7 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                     "scan_interval_sec" to prefs.getFloat("scan_interval_sec", 5f).toDouble(),
                     "video_record_len" to prefs.getFloat("video_record_len", 15f).toDouble(),
                     "confidence_threshold" to prefs.getFloat("confidence_threshold", 0.60f).toDouble(),
-                    "prompt_usr" to prefs.getString("prompt_usr", ""), // Only sending the single user prompt now
+                    "prompt_usr" to prefs.getString("prompt_usr", ""),
                     "llm_enabled" to prefs.getBoolean("llm_enabled", true),
                     "face_recog_enabled" to prefs.getBoolean("face_recog_enabled", false)
                 )
@@ -237,7 +237,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
     var faceRecogEnabled by remember { mutableStateOf(prefs.getBoolean("face_recog_enabled", false)) }
     
-    // CRITICAL FIX: Replaced sys/usr prompts with a single unified AI prompt setting
     var aiPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Report if you see a clock. If you do not see it, reply EXACTLY with CLEAR.") ?: "") }
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { viewModel.processFaceRegistration(it, context) } }
@@ -274,7 +273,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             }
             if (appRole == "Viewer") {
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("Make sure the Camera device is currently running its stream before you try to push settings.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text("Make sure the Camera device is running its live stream before pushing settings.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(onClick = { viewModel.syncToCamera(context, targetIp, securityToken, onSuccess = { Toast.makeText(context, "Settings Synced!", Toast.LENGTH_SHORT).show() }, onError = { Toast.makeText(context, "Sync Failed: $it", Toast.LENGTH_LONG).show() }) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009688)), modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("📡 PUSH SETTINGS TO CAMERA", fontWeight = FontWeight.Bold) }
             }
@@ -282,10 +281,11 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
-            // CRITICAL FIX: Connection & Networking Descriptions Fully Restored
+            // CRITICAL FIX: Complete Tailscale and Networking Descriptions
             Text("Connection & Networking", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Choose Local WiFi for direct private connection, or Firebase for global cloud routing.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Camera & Viewer must be on the same network. Install Tailscale VPN on both devices and enter the Tailscale IP below to access the camera securely from anywhere in the world.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(8.dp))
             ExposedDropdownMenuBox(expanded = menuExpanded, onExpandedChange = { menuExpanded = !menuExpanded }) {
                 OutlinedTextField(value = viewerMode, onValueChange = {}, readOnly = true, label = { Text("Routing Protocol") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded) }, modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors())
                 ExposedDropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
@@ -293,8 +293,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Enter the IP address of the Camera device (e.g., 192.168.1.5). Required for Local WiFi mode.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            OutlinedTextField(value = targetIp, onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, label = { Text("Camera IP Address") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = targetIp, onValueChange = { targetIp = it; prefs.edit().putString("target_ip", it).apply() }, label = { Text("Camera IP Address (Tailscale or Local)") }, modifier = Modifier.fillMaxWidth())
             Spacer(modifier = Modifier.height(8.dp))
             Text("A unique password to encrypt and secure your stream. Must match exactly on both devices.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             OutlinedTextField(value = securityToken, onValueChange = { securityToken = it; prefs.edit().putString("security_token", it).apply() }, label = { Text("Master Auth Token") }, trailingIcon = { IconButton(onClick = { clipboardManager.setText(AnnotatedString(securityToken)) }) { Text("📋") } }, modifier = Modifier.fillMaxWidth())
@@ -310,7 +309,6 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
-            // CRITICAL FIX: Local Vault Descriptions Restored
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Upload a photo. The AI will auto-crop the face. Faces are NOT synced remotely, they must be added directly to the Camera device.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -357,24 +355,16 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Slider(value = videoRecordLen, onValueChange = { videoRecordLen = it }, onValueChangeFinished = { prefs.edit().putFloat("video_record_len", videoRecordLen).apply() }, valueRange = 5f..60f)
 
             Spacer(modifier = Modifier.height(24.dp))
-            
-            // CRITICAL FIX: Single AI Prompt Architecture & Descriptions
             Text("AI Vision Prompt", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Write exactly what the AI should look for. Tell the AI to output 'CLEAR' if the condition is not met. The app will automatically treat 'CLEAR' as a normal log, and anything else as a Popup Alert.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Tell the AI what to look for. If you tell it to reply 'CLEAR' when nothing happens, the app will silently log it as normal. Anything else triggers an Alert & Video.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(8.dp))
-            OutlinedTextField(
-                value = aiPrompt, 
-                onValueChange = { aiPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, 
-                label = { Text("Single AI Prompt") }, 
-                modifier = Modifier.fillMaxWidth()
-            )
+            OutlinedTextField(value = aiPrompt, onValueChange = { aiPrompt = it; prefs.edit().putString("prompt_usr", it).apply() }, label = { Text("Single AI Instruction") }, modifier = Modifier.fillMaxWidth())
 
             Spacer(modifier = Modifier.height(24.dp))
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
             
-            // CRITICAL FIX: LLM Descriptions Restored
             Text("Local LLM Model", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Current model loaded: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -383,8 +373,10 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 Text("📁 Import Model from Device (.litertlm)") 
             }
             Spacer(modifier = Modifier.height(8.dp))
+            
+            // CRITICAL FIX: Cleaner Button Text as requested
             Button(onClick = { viewModel.downloadCloudModel(context) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))) { 
-                Text("☁️ Download Gemma-4-E2B via Android Manager") 
+                Text("☁️ Download AI Model") 
             }
             Spacer(modifier = Modifier.height(48.dp))
         }
