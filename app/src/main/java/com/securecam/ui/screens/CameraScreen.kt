@@ -204,6 +204,11 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         LaunchedEffect(forceScanTrigger, scanIntervalMs) {
             while(isActive) {
                 delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
+                
+                // CRITICAL FIX: Wait until AI is completely free to prevent traffic jams
+                while(viewModel.aiPipeline.isBusy() && isActive) { delay(100) }
+                
+                // Grab the absolute freshest live frame
                 latestBitmapRef.getAndSet(null)?.let { bmp ->
                     if (!bmp.isRecycled) {
                         try { val copy = bmp.copy(Bitmap.Config.ARGB_8888, false); if (copy != null) { viewModel.aiPipeline.processFrame(copy) } } catch (e: Exception) {}
