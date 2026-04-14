@@ -65,9 +65,7 @@ fun getLocalIpAddress(): String {
             val addrs = intf.inetAddresses
             while (addrs.hasMoreElements()) {
                 val addr = addrs.nextElement()
-                if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
-                    return addr.hostAddress ?: "No IP"
-                }
+                if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) return addr.hostAddress ?: "No IP"
             }
         }
     } catch (e: Exception) {}
@@ -112,37 +110,34 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         var scanIntervalMs by remember { mutableStateOf((prefs.getFloat("scan_interval_sec", 5f) * 1000).toLong()) }
         val securityToken = remember { prefs.getString("security_token", "") ?: "" }
         val localServer = remember { LocalSignalingServer(8081, securityToken) }
-
-        // CRITICAL FIX: Turn on the actual API server so remote fetching works
         val apiServer = remember { LocalApiServer(8082, securityToken, context) }
         
         val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
         
-        var isTorchOn by remember { mutableStateOf(false) }
+        // CRITICAL FIX: Because WebRTC explicitly locks the Camera2 device, standard setTorchMode crashes. 
+        // We will try standard Torch first. If WebRTC blocks it, we seamlessly failover to a maximum-brightness white screen strobe.
+        var isFlashActive by remember { mutableStateOf(false) }
         val cameraManager = remember { context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager }
 
-        LaunchedEffect(isTorchOn) {
+        LaunchedEffect(isFlashActive) {
             try {
-                val cameraId = cameraManager.cameraIdList.firstOrNull { 
-                    cameraManager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
-                } ?: cameraManager.cameraIdList[0]
-                cameraManager.setTorchMode(cameraId, isTorchOn)
-            } catch (e: Exception) {}
+                val cameraId = cameraManager.cameraIdList.firstOrNull { cameraManager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK } ?: cameraManager.cameraIdList[0]
+                cameraManager.setTorchMode(cameraId, isFlashActive)
+            } catch (e: Exception) {
+                // Failover to Screen Strobe if Camera is locked by WebRTC
+                val window = activity?.window
+                val params = window?.attributes
+                params?.screenBrightness = if (isFlashActive) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                window?.attributes = params
+            }
         }
 
         DisposableEffect(Unit) {
             tts = TextToSpeech(context) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    tts?.language = Locale.US
-                    tts?.setPitch(1.3f)
-                    tts?.setSpeechRate(1.2f)
-                }
+                if (status == TextToSpeech.SUCCESS) { tts?.language = Locale.US; tts?.setPitch(1.3f); tts?.setSpeechRate(1.2f) }
             }
             activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            onDispose { 
-                tts?.shutdown() 
-                activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            }
+            onDispose { tts?.shutdown(); activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         }
 
         LaunchedEffect(isScreaming) {
@@ -153,9 +148,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     tts?.speak("WARNING! INTRUDER DETECTED! LEAVE THE PREMISES IMMEDIATELY!", TextToSpeech.QUEUE_FLUSH, null, null)
                     delay(4000)
                 }
-            } else {
-                tts?.stop()
-            }
+            } else { tts?.stop() }
         }
 
         LaunchedEffect(Unit) {
@@ -164,12 +157,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     localRenderer.addFrameListener({ bitmap ->
                         try {
                             val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                            if (bmpCopy != null) {
-                                mjpegServer.updateFrame(bmpCopy)
-                                dvrEngine.appendFrame(bmpCopy)
-                                val old = latestBitmapRef.getAndSet(bmpCopy)
-                                old?.recycle()
-                            }
+                            if (bmpCopy != null) { mjpegServer.updateFrame(bmpCopy); dvrEngine.appendFrame(bmpCopy); val old = latestBitmapRef.getAndSet(bmpCopy); old?.recycle() }
                         } catch(e: Exception) {}
                     }, 0.5f)
                 } catch(e: Exception) {}
@@ -182,12 +170,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
                 latestBitmapRef.getAndSet(null)?.let { bmp ->
                     if (!bmp.isRecycled) {
-                        try {
-                            val copy = bmp.copy(Bitmap.Config.ARGB_8888, false)
-                            if (copy != null) {
-                                viewModel.aiPipeline.processFrame(copy)
-                            }
-                        } catch (e: Exception) {}
+                        try { val copy = bmp.copy(Bitmap.Config.ARGB_8888, false); if (copy != null) { viewModel.aiPipeline.processFrame(copy) } } catch (e: Exception) {}
                         bmp.recycle()
                     }
                 }
@@ -199,23 +182,14 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             viewModel.eventRepository.securityEvents.collect { event ->
                 val text = event.description
                 val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                
                 alertHistory.add(0, "[$timeStr] $text")
                 if (alertHistory.size > 50) alertHistory.removeLast()
-                
-                // CRITICAL FIX: Color mapping. "Safe" is safe. "CLEAR" is safe. Authorized faces are safe.
                 val isSafe = text.contains("Safe", ignoreCase = true) || text.contains("CLEAR", ignoreCase = true) || event.type == "BIOMETRIC"
-                
-                if (!isSafe && !text.contains("[SYSTEM]")) {
-                    dvrEngine.triggerRecording()
-                }
+                if (!isSafe && !text.contains("[SYSTEM]")) dvrEngine.triggerRecording()
 
                 localServer.broadcast(Gson().toJson(mapOf("type" to "ALERT", "text" to text)))
                 dataChannel?.let { dc ->
-                    if (dc.state() == DataChannel.State.OPEN) {
-                        val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8))
-                        dc.send(DataChannel.Buffer(buffer, false))
-                    }
+                    if (dc.state() == DataChannel.State.OPEN) { val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8)); dc.send(DataChannel.Buffer(buffer, false)) }
                 }
             }
         }
@@ -226,20 +200,18 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             try { apiServer.start() } catch (e: Exception) {}
             
             val rtcManager = WebRTCManager(context).apply { initRenderer(localRenderer) }
-            
             val fbUrl = prefs.getString("fb_db_url", "") ?: ""
             var firebaseClient: FirebaseSignalingClient? = null
             if (fbUrl.isNotBlank()) {
                 firebaseClient = FirebaseSignalingClient(context, "CAMERA")
                 firebaseClient.clearSignals()
                 firebaseClient.onConnected = { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on WiFi & Firebase" } }
-            } else {
-                CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on Local WiFi only" }
-            }
+            } else { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on Local WiFi only" } }
             localServer.start()
             
             var activeSignaler: String? = null
-            
+            var peerConnection: PeerConnection? = null
+
             val observer = object : SimplePeerConnectionObserver() {
                 override fun onIceCandidate(candidate: IceCandidate?) {
                     candidate?.let {
@@ -250,52 +222,57 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 }
             }
             
-            val peerConnection = rtcManager.createPeerConnection(observer)
-            val localAudio = rtcManager.createLocalAudioTrack()
-            localAudio?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
+            // CRITICAL FIX: Ghost WebRTC Handlers. Instead of holding 1 dead peerConnection forever, we cleanly rebuild it upon new JOIN.
+            fun buildPeerConnection() {
+                try { peerConnection?.dispose() } catch(e:Exception){}
+                peerConnection = rtcManager.createPeerConnection(observer)
+                val localAudio = rtcManager.createLocalAudioTrack()
+                localAudio?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
+                val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
+                localTrack?.let { peerConnection?.addTrack(it, listOf("stream_1")) }
 
-            dataChannel = peerConnection?.createDataChannel("telemetry", DataChannel.Init())
-            dataChannel?.registerObserver(object : DataChannel.Observer {
-                override fun onBufferedAmountChange(p0: Long) {}
-                override fun onStateChange() {}
-                override fun onMessage(buffer: DataChannel.Buffer?) {
-                    buffer?.data?.let { byteBuffer ->
-                        val bytes = ByteArray(byteBuffer.remaining())
-                        byteBuffer.get(bytes)
-                        val command = String(bytes, Charsets.UTF_8)
-                        
-                        try {
-                            val map = Gson().fromJson(command, Map::class.java)
-                            if (map["type"] == "SYNC_SETTINGS") {
-                                prefs.edit().apply {
-                                    putFloat("scan_interval_sec", (map["scan_interval_sec"] as Double).toFloat())
-                                    putFloat("confidence_threshold", (map["confidence_threshold"] as Double).toFloat())
-                                    putString("prompt_usr", map["prompt_usr"] as? String ?: "")
-                                    putBoolean("llm_enabled", map["llm_enabled"] as? Boolean ?: true)
-                                    putBoolean("face_recog_enabled", map["face_recog_enabled"] as? Boolean ?: false)
-                                }.apply()
-                                CoroutineScope(Dispatchers.Main).launch {
-                                    scanIntervalMs = ((map["scan_interval_sec"] as Double).toFloat() * 1000).toLong()
-                                    alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer successfully.")
+                dataChannel = peerConnection?.createDataChannel("telemetry", DataChannel.Init())
+                dataChannel?.registerObserver(object : DataChannel.Observer {
+                    override fun onBufferedAmountChange(p0: Long) {}
+                    override fun onStateChange() {}
+                    override fun onMessage(buffer: DataChannel.Buffer?) {
+                        buffer?.data?.let { byteBuffer ->
+                            val bytes = ByteArray(byteBuffer.remaining())
+                            byteBuffer.get(bytes)
+                            val command = String(bytes, Charsets.UTF_8)
+                            
+                            try {
+                                val map = Gson().fromJson(command, Map::class.java)
+                                if (map["type"] == "SYNC_SETTINGS") {
+                                    prefs.edit().apply {
+                                        putFloat("scan_interval_sec", (map["scan_interval_sec"] as Double).toFloat())
+                                        putFloat("confidence_threshold", (map["confidence_threshold"] as Double).toFloat())
+                                        putString("prompt_usr", map["prompt_usr"] as? String ?: "")
+                                        putBoolean("llm_enabled", map["llm_enabled"] as? Boolean ?: true)
+                                        putBoolean("face_recog_enabled", map["face_recog_enabled"] as? Boolean ?: false)
+                                    }.apply()
+                                    CoroutineScope(Dispatchers.Main).launch {
+                                        scanIntervalMs = ((map["scan_interval_sec"] as Double).toFloat() * 1000).toLong()
+                                        alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer successfully.")
+                                    }
+                                    return
                                 }
-                                return
-                            }
-                        } catch (e: Exception) {}
-                        
-                        CoroutineScope(Dispatchers.Main).launch {
-                            when (command) {
-                                "CMD_SIREN" -> { isScreaming = !isScreaming; alertHistory.add(0, "[SYSTEM] Siren toggled.") }
-                                "CMD_SWITCH_CAM" -> { rtcManager.switchCamera(); alertHistory.add(0, "[SYSTEM] Lens switched.") }
-                                "CMD_FORCE_SCAN" -> { forceScanTrigger++; alertHistory.add(0, "[SYSTEM] Scan forced.") }
-                                "CMD_FLASH" -> { isTorchOn = !isTorchOn; alertHistory.add(0, "[SYSTEM] Camera LED Torch toggled.") }
+                            } catch (e: Exception) {}
+                            
+                            CoroutineScope(Dispatchers.Main).launch {
+                                when (command) {
+                                    "CMD_SIREN" -> { isScreaming = !isScreaming; alertHistory.add(0, "[SYSTEM] Siren toggled.") }
+                                    "CMD_SWITCH_CAM" -> { rtcManager.switchCamera(); alertHistory.add(0, "[SYSTEM] Lens switched.") }
+                                    "CMD_FORCE_SCAN" -> { forceScanTrigger++; alertHistory.add(0, "[SYSTEM] Scan forced.") }
+                                    "CMD_FLASH" -> { isFlashActive = !isFlashActive; alertHistory.add(0, "[SYSTEM] Camera LED Flash toggled.") }
+                                }
                             }
                         }
                     }
-                }
-            })
-
-            val localTrack = rtcManager.createLocalVideoTrack(context, localRenderer)
-            localTrack?.let { peerConnection?.addTrack(it, listOf("stream_1")) }
+                })
+            }
+            
+            buildPeerConnection() // Build initial
 
             fun processOffer(sdpStr: String) {
                 val sdpMap = Gson().fromJson(sdpStr, Map::class.java)
@@ -303,13 +280,15 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
                 CoroutineScope(Dispatchers.Main).launch { streamStatus = "LIVE STREAM ACTIVE" }
             }
+            
             fun processJoin(signalerType: String) {
                 activeSignaler = signalerType
                 CoroutineScope(Dispatchers.Main).launch { streamStatus = "Viewer Connected via $signalerType! Gathering ICE..." }
+                buildPeerConnection() // Wipe the ghost connections out
                 peerConnection?.createOffer(object : SimpleSdpObserver() {
                     override fun onCreateSuccess(sdp: SessionDescription?) {
                         sdp?.let {
-                            peerConnection.setLocalDescription(SimpleSdpObserver(), it)
+                            peerConnection?.setLocalDescription(SimpleSdpObserver(), it)
                             if (signalerType == "LOCAL") localServer.broadcast(Gson().toJson(mapOf("type" to "OFFER", "typeSDP" to it.type.canonicalForm(), "sdp" to it.description)))
                             else firebaseClient?.sendSignal("OFFER", Gson().toJson(SdpData(it.type.canonicalForm(), it.description)))
                         }
@@ -328,20 +307,16 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 val map = Gson().fromJson(jsonStr, Map::class.java)
                 when (map["type"]) {
                     "JOIN" -> processJoin("LOCAL")
-                    "ANSWER" -> {
-                        val sdpStr = Gson().toJson(mapOf("type" to map["typeSDP"], "sdp" to map["sdp"]))
-                        processOffer(sdpStr)
-                    }
-                    "ICE" -> {
-                        peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String))
-                    }
+                    "DISCONNECT" -> { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on WiFi" } }
+                    "ANSWER" -> { processOffer(Gson().toJson(mapOf("type" to map["typeSDP"], "sdp" to map["sdp"]))) }
+                    "ICE" -> { peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String)) }
                 }
             }
 
             onDispose {
                 try { localRenderer.release() } catch(e: Exception){}
                 isScreaming = false
-                isTorchOn = false
+                isFlashActive = false
                 mjpegServer.stop()
                 localServer.stop()
                 apiServer.stop()
@@ -352,8 +327,8 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
+        Box(modifier = Modifier.fillMaxSize().background(if(isFlashActive) Color.White else Color.Black)) {
+            if(!isFlashActive) AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
 
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
@@ -369,12 +344,8 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     items(alertHistory) { alert ->
                         val isSafe = alert.contains("Safe", ignoreCase = true) || alert.contains("CLEAR", ignoreCase = true) || alert.contains("Authorized Face")
                         val isSystem = alert.contains("[SYSTEM]")
-                        // CRITICAL FIX: Safe logs are mapped back to Green/Grey so they don't look like threats
                         val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x884CAF50) else Color(0xCCD32F2F)
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = bgColor),
-                            modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
-                        ) {
+                        Card(colors = CardDefaults.cardColors(containerColor = bgColor), modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()) {
                             Text(text = alert, color = Color.White, modifier = Modifier.padding(12.dp))
                         }
                     }
@@ -382,17 +353,11 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 Spacer(modifier = Modifier.height(72.dp))
             }
 
-            Button(
-                onClick = { navController.popBackStack() },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).height(56.dp).fillMaxWidth(0.6f)
-            ) {
+            Button(onClick = { navController.popBackStack() }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)), modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).height(56.dp).fillMaxWidth(0.6f)) {
                 Text("END STREAM", style = MaterialTheme.typography.titleMedium)
             }
         }
     } else {
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-            Text("Waiting for Camera & Microphone Permissions...", color = Color.White)
-        }
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) { Text("Waiting for Camera & Microphone Permissions...", color = Color.White) }
     }
 }
