@@ -6,6 +6,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Build
 import android.view.Surface
 import java.io.File
 
@@ -22,10 +23,12 @@ class DvrEngine(private val context: Context) {
         if (isRecording) return
         try {
             val file = File(context.filesDir, fileName)
+            if (file.exists()) file.delete()
+            
             muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                setInteger(MediaFormat.KEY_BIT_RATE, 2000000)
+                setInteger(MediaFormat.KEY_BIT_RATE, 3000000)
                 setInteger(MediaFormat.KEY_FRAME_RATE, 5)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
@@ -42,7 +45,9 @@ class DvrEngine(private val context: Context) {
     fun appendFrame(bitmap: Bitmap) {
         if (!isRecording || surface == null) return
         try {
-            val canvas = surface?.lockCanvas(null)
+            // CRITICAL FIX: lockHardwareCanvas() enables native OS surface rendering, fixing the 0-byte blank video bug
+            val canvas = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) surface?.lockHardwareCanvas() else surface?.lockCanvas(null)
+            
             canvas?.drawBitmap(bitmap, 0f, 0f, null)
             surface?.unlockCanvasAndPost(canvas!!)
             drainCodec(false)
@@ -57,16 +62,14 @@ class DvrEngine(private val context: Context) {
             drainCodec(true)
             codec?.stop()
             codec?.release()
-            if (muxerStarted) {
-                muxer?.stop()
-            }
+            if (muxerStarted) muxer?.stop()
             muxer?.release()
         } catch (e: Exception) {}
         codec = null; muxer = null; surface = null
     }
 
     private fun drainCodec(endOfStream: Boolean) {
-        if (endOfStream) codec?.signalEndOfInputStream()
+        if (endOfStream) { try { codec?.signalEndOfInputStream() } catch(e: Exception){} }
         val bufferInfo = MediaCodec.BufferInfo()
         while (true) {
             val status = codec?.dequeueOutputBuffer(bufferInfo, 10000) ?: break
@@ -83,7 +86,7 @@ class DvrEngine(private val context: Context) {
                 if (encodedData != null && bufferInfo.size != 0) {
                     encodedData.position(bufferInfo.offset)
                     encodedData.limit(bufferInfo.offset + bufferInfo.size)
-                    bufferInfo.presentationTimeUs = frameCount * 200000L // 5 fps = 200ms per frame
+                    bufferInfo.presentationTimeUs = frameCount * 200000L // 5 fps
                     muxer?.writeSampleData(trackIndex, encodedData, bufferInfo)
                 }
                 codec?.releaseOutputBuffer(status, false)
