@@ -27,7 +27,6 @@ class AlertService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var viewerSocket: Socket? = null
 
-    // CRITICAL FIX: START_STICKY ensures WhatsApp-style persistence so Android automatically reboots the service if closed
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY 
     }
@@ -91,8 +90,14 @@ class AlertService : Service() {
                 if (appRole == "Viewer") {
                     try {
                         val ip = prefs.getString("target_ip", "") ?: ""
+                        val token = prefs.getString("security_token", "") ?: ""
                         if (ip.isNotBlank()) {
                             viewerSocket = Socket(ip, 8081)
+                            
+                            // CRITICAL FIX: Authenticate TCP socket with password!
+                            val out = java.io.PrintWriter(viewerSocket!!.getOutputStream(), true)
+                            out.println(token)
+                            
                             val reader = BufferedReader(InputStreamReader(viewerSocket!!.getInputStream()))
                             while (isActive && prefs.getString("app_role", "Camera") == "Viewer") {
                                 val line = reader.readLine() ?: break
