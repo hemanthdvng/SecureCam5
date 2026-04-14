@@ -70,7 +70,6 @@ fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hilt
         var dataChannel by remember { mutableStateOf<DataChannel?>(null) }
         var localAudioTrack by remember { mutableStateOf<AudioTrack?>(null) }
         var isMicActive by remember { mutableStateOf(false) }
-        var showVault by remember { mutableStateOf(false) }
         
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val viewerMode = prefs.getString("viewer_mode", "Local WiFi")
@@ -140,7 +139,6 @@ fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hilt
             }
             
             val peerConnection = rtcManager.createPeerConnection(observer)
-            
             localAudioTrack = rtcManager.createLocalAudioTrack()
             localAudioTrack?.setEnabled(false)
             localAudioTrack?.let { peerConnection?.addTrack(it, listOf("audio_1")) }
@@ -199,59 +197,33 @@ fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hilt
 
             onDispose {
                 try { remoteRenderer.release() } catch(e: Exception){}
+                // CRITICAL FIX: Gracefully disconnect and drop ghost WebRTC sockets so buttons work after reopening
+                if (viewerMode == "Local WiFi") {
+                    localClient?.send(Gson().toJson(mapOf("type" to "DISCONNECT")))
+                }
                 localClient?.disconnect()
                 peerConnection?.dispose()
                 rtcManager.dispose()
             }
         }
-        
-        if (showVault) {
-            AlertDialog(
-                onDismissRequest = { showVault = false },
-                modifier = Modifier.fillMaxSize().padding(16.dp),
-                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-                text = {
-                    AndroidView(factory = { ctx ->
-                        android.webkit.WebView(ctx).apply {
-                            settings.javaScriptEnabled = true
-                            val ip = prefs.getString("target_ip", "") ?: ""
-                            loadUrl("http://$ip:8080/vault?token=$securityToken")
-                        }
-                    }, modifier = Modifier.fillMaxSize())
-                },
-                confirmButton = {
-                    TextButton(onClick = { showVault = false }) { Text("Close Vault", fontSize = 16.sp, color = Color.Red) }
-                }
-            )
-        }
 
         Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("WebRTC Viewer ($viewerMode)") },
-                    navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }
-                )
-            }
+            topBar = { TopAppBar(title = { Text("WebRTC Viewer") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }) }
         ) { padding ->
             Box(modifier = Modifier.padding(padding).fillMaxSize().background(Color.Black)) {
-                
                 AndroidView(factory = { remoteRenderer }, modifier = Modifier.fillMaxSize())
-                
                 Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
                         Text(text = "Status: $streamStatus", color = Color.Green, modifier = Modifier.padding(8.dp))
                     }
                     Spacer(modifier = Modifier.height(16.dp))
-                    
                     LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                         items(alertHistory) { alert ->
-                            val isSafe = alert.contains("CLEAR") || alert.contains("[STATUS_SAFE]") || alert.contains("Authorized Face")
+                            // CRITICAL FIX: Safe UI colors match the Camera screen to prevent false red alarms
+                            val isSafe = alert.contains("Safe", ignoreCase = true) || alert.contains("CLEAR", ignoreCase = true) || alert.contains("Authorized Face")
                             val isSystem = alert.contains("[SYSTEM]")
-                            val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x99424242) else Color(0xCCD32F2F)
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = bgColor),
-                                modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()
-                            ) {
+                            val bgColor = if (isSystem) Color(0x991976D2) else if (isSafe) Color(0x884CAF50) else Color(0xCCD32F2F)
+                            Card(colors = CardDefaults.cardColors(containerColor = bgColor), modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth()) {
                                 Text(text = alert, color = Color.White, modifier = Modifier.padding(12.dp))
                             }
                         }
@@ -263,85 +235,28 @@ fun ViewerScreen(navController: NavController, viewModel: ViewerViewModel = hilt
                     if (streamStatus != "LIVE STREAM ACTIVE") {
                         Button(
                             onClick = { 
-                                if (viewerMode == "Local WiFi") {
-                                    localClient?.send(Gson().toJson(mapOf("type" to "JOIN")))
-                                } else {
-                                    fbClient?.sendSignal("JOIN") 
-                                }
+                                if (viewerMode == "Local WiFi") localClient?.send(Gson().toJson(mapOf("type" to "JOIN")))
+                                else fbClient?.sendSignal("JOIN") 
                             },
                             modifier = Modifier.padding(horizontal = 32.dp).fillMaxWidth()
-                        ) {
-                            Text("JOIN STREAM")
-                        }
+                        ) { Text("JOIN STREAM") }
                     } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            Button(
-                                onClick = { sendCommand("CMD_SIREN") }, 
-                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))
-                            ) { Text("🚨", fontSize = 24.sp) }
-                            Button(
-                                onClick = { sendCommand("CMD_FLASH") }, 
-                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF512DA8))
-                            ) { Text("🔦", fontSize = 24.sp) }
-                            Button(
-                                onClick = { sendCommand("CMD_SWITCH_CAM") }, 
-                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
-                            ) { Text("🔄", fontSize = 24.sp) }
-                            Button(
-                                onClick = { showVault = true }, 
-                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE65100))
-                            ) { Text("🎞️", fontSize = 24.sp) }
-                            
-                            Button(
-                                onClick = { 
-                                    val syncData = mapOf(
-                                        "type" to "SYNC_SETTINGS",
-                                        "scan_interval_sec" to prefs.getFloat("scan_interval_sec", 5f),
-                                        "confidence_threshold" to prefs.getFloat("confidence_threshold", 0.85f),
-                                        "prompt_sys" to prefs.getString("prompt_sys", ""),
-                                        "prompt_usr" to prefs.getString("prompt_usr", ""),
-                                        "llm_enabled" to prefs.getBoolean("llm_enabled", true),
-                                        "face_recog_enabled" to prefs.getBoolean("face_recog_enabled", true)
-                                    )
-                                    sendCommand(Gson().toJson(syncData))
-                                    CoroutineScope(Dispatchers.Main).launch {
-                                        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                                        alertHistory.add(0, "[$timeStr] [SYSTEM] Pushed local settings to Camera.")
-                                    }
-                                }, 
-                                shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009688))
-                            ) { Text("📡", fontSize = 24.sp) }
+                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            Button(onClick = { sendCommand("CMD_SIREN") }, shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F))) { Text("🚨", fontSize = 24.sp) }
+                            Button(onClick = { sendCommand("CMD_FLASH") }, shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF512DA8))) { Text("🔦", fontSize = 24.sp) }
+                            Button(onClick = { sendCommand("CMD_SWITCH_CAM") }, shape = CircleShape, modifier = Modifier.size(56.dp), contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))) { Text("🔄", fontSize = 24.sp) }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
-                            onClick = { 
-                                isMicActive = !isMicActive
-                                localAudioTrack?.setEnabled(isMicActive)
-                            },
-                            shape = RoundedCornerShape(32.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = if (isMicActive) Color(0xFF388E3C) else Color(0xFF616161)),
+                            onClick = { isMicActive = !isMicActive; localAudioTrack?.setEnabled(isMicActive) },
+                            shape = RoundedCornerShape(32.dp), colors = ButtonDefaults.buttonColors(containerColor = if (isMicActive) Color(0xFF388E3C) else Color(0xFF616161)),
                             modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(64.dp)
-                        ) {
-                            Text(
-                                text = if (isMicActive) "🎤 MIC ACTIVE (Tap to Mute)" else "🔇 PUSH TO TALK",
-                                fontSize = 18.sp, fontWeight = FontWeight.Bold
-                            )
-                        }
+                        ) { Text(text = if (isMicActive) "🎤 MIC ACTIVE" else "🔇 PUSH TO TALK", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
                     }
                 }
             }
         }
     } else {
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-            Text("Waiting for Microphone Permission...", color = Color.White)
-        }
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) { Text("Waiting for Microphone Permission...", color = Color.White) }
     }
 }
