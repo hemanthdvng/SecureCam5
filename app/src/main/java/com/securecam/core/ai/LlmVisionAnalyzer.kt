@@ -116,7 +116,7 @@ class LlmVisionAnalyzer(private val context: Context) {
                     )
                 )
 
-                val imageBytes = bitmap.toJpegBytes(maxDim = 512)
+                val imageBytes = bitmap.toJpegBytes(maxDim = 1920)
                 val contents = Contents.of(listOf(
                     Content.ImageBytes(imageBytes),
                     Content.Text(userPrompt)
@@ -140,7 +140,7 @@ class LlmVisionAnalyzer(private val context: Context) {
         }
     }
 
-    private fun Bitmap.toJpegBytes(maxDim: Int = 512): ByteArray {
+    private fun Bitmap.toJpegBytes(maxDim: Int = 1920): ByteArray {
         val scale = if (maxOf(width, height) > maxDim) maxDim.toFloat() / maxOf(width, height) else 1f
         val scaled = if (scale < 1f) Bitmap.createScaledBitmap(this, (width * scale).toInt().coerceAtLeast(1), (height * scale).toInt().coerceAtLeast(1), true) else this
         return ByteArrayOutputStream().also {
