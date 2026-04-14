@@ -6,6 +6,9 @@ import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.content.Intent
+import android.provider.Settings as AndroidSettings
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.widget.Toast
@@ -181,6 +184,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     val faces by viewModel.registeredFaces.collectAsState()
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
     val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
     
     var securityToken by remember { mutableStateOf(prefs.getString("security_token", "").takeIf { !it.isNullOrBlank() } ?: UUID.randomUUID().toString().substring(0, 8).also { prefs.edit().putString("security_token", it).apply() }) }
@@ -235,7 +239,13 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             ExposedDropdownMenuBox(expanded = roleExpanded, onExpandedChange = { roleExpanded = !roleExpanded }) {
                 OutlinedTextField(value = appRole, onValueChange = {}, readOnly = true, label = { Text("Use this device as:") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = roleExpanded) }, modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors())
                 ExposedDropdownMenu(expanded = roleExpanded, onDismissRequest = { roleExpanded = false }) {
-                    listOf("Camera", "Viewer").forEach { mode -> DropdownMenuItem(text = { Text(mode) }, onClick = { appRole = mode; prefs.edit().putString("app_role", mode).apply(); roleExpanded = false }) }
+                    listOf("Camera", "Viewer").forEach { mode -> DropdownMenuItem(text = { Text(mode) }, onClick = { 
+                            appRole = mode; prefs.edit().putString("app_role", mode).apply(); roleExpanded = false 
+                            if (mode == "Viewer" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+                                val intent = Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply { data = Uri.parse("package:${context.packageName}") }
+                                context.startActivity(intent)
+                            }
+                        }) }
                 }
             }
             if (appRole == "Viewer") {
