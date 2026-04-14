@@ -57,25 +57,11 @@ fun LogsScreen(navController: NavController) {
         isLoading = true
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                if (appRole == "Camera") {
-                    val db = Room.databaseBuilder(context, LogDatabase::class.java, "securecam_db").build()
-                    val localLogs = db.logDao().getAllLogsSync()
-                    db.close()
-                    withContext(Dispatchers.Main) { logs = localLogs }
-                } 
-                else if (appRole == "Viewer" && targetIp.isNotBlank()) {
-                    val url = URL("http://$targetIp:8082/api/logs?token=$token")
-                    val connection = url.openConnection() as HttpURLConnection
-                    connection.connectTimeout = 5000
-                    if (connection.responseCode == 200) {
-                        val json = connection.inputStream.bufferedReader().readText()
-                        val type = object : TypeToken<List<SecurityLogEntity>>() {}.type
-                        val remoteLogs: List<SecurityLogEntity> = Gson().fromJson(json, type)
-                        withContext(Dispatchers.Main) { logs = remoteLogs }
-                    }
-                } else {
-                    withContext(Dispatchers.Main) { logs = emptyList() }
-                }
+                // CRITICAL FIX: The Viewer now pulls its logs completely offline from its OWN local Room DB!
+                val db = Room.databaseBuilder(context, LogDatabase::class.java, "securecam_db").build()
+                val localLogs = db.logDao().getAllLogsSync()
+                db.close()
+                withContext(Dispatchers.Main) { logs = localLogs }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { logs = emptyList() }
             } finally {
@@ -87,18 +73,18 @@ fun LogsScreen(navController: NavController) {
     fun deleteLog(id: Int) {
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                if (appRole == "Camera") {
-                    val db = Room.databaseBuilder(context, LogDatabase::class.java, "securecam_db").build()
-                    db.logDao().deleteLogById(id)
-                    db.close()
-                    fetchLogs()
-                } else if (appRole == "Viewer" && targetIp.isNotBlank()) {
+                val db = Room.databaseBuilder(context, LogDatabase::class.java, "securecam_db").build()
+                db.logDao().deleteLogById(id)
+                db.close()
+                
+                // If Viewer, also try to tell the camera to delete its master copy
+                if (appRole == "Viewer" && targetIp.isNotBlank()) {
                     val url = URL("http://$targetIp:8082/api/logs?token=$token&id=$id")
                     val connection = url.openConnection() as HttpURLConnection
                     connection.requestMethod = "DELETE"
                     connection.responseCode
-                    fetchLogs()
                 }
+                fetchLogs()
             } catch (e: Exception) {}
         }
     }
@@ -122,7 +108,6 @@ fun LogsScreen(navController: NavController) {
             text = {
                 val exoPlayer = remember { 
                     ExoPlayer.Builder(context).build().apply { 
-                        // CRITICAL FIX: Correctly formats local File path for ExoPlayer without URI type crashes
                         val mediaItem = if (selectedVideoUrl != null) MediaItem.fromUri(selectedVideoUrl!!) 
                                         else MediaItem.fromUri(Uri.fromFile(java.io.File(context.filesDir, selectedVideoLocalPath!!)).toString())
                         setMediaItem(mediaItem)
