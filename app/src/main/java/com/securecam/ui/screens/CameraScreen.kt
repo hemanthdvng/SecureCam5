@@ -52,10 +52,7 @@ import java.util.Locale
 import javax.inject.Inject
 
 @HiltViewModel
-class CameraViewModel @Inject constructor(
-    val aiPipeline: HybridAIPipeline,
-    val eventRepository: EventRepository
-) : ViewModel()
+class CameraViewModel @Inject constructor(val aiPipeline: HybridAIPipeline, val eventRepository: EventRepository) : ViewModel()
 
 fun getLocalIpAddress(): String {
     try {
@@ -63,10 +60,7 @@ fun getLocalIpAddress(): String {
         while (interfaces.hasMoreElements()) {
             val intf = interfaces.nextElement()
             val addrs = intf.inetAddresses
-            while (addrs.hasMoreElements()) {
-                val addr = addrs.nextElement()
-                if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) return addr.hostAddress ?: "No IP"
-            }
+            while (addrs.hasMoreElements()) { val addr = addrs.nextElement(); if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) return addr.hostAddress ?: "No IP" }
         }
     } catch (e: Exception) {}
     return "No WiFi"
@@ -111,20 +105,19 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val securityToken = remember { prefs.getString("security_token", "") ?: "" }
         val localServer = remember { LocalSignalingServer(8081, securityToken) }
         val apiServer = remember { LocalApiServer(8082, securityToken, context) }
-        
         val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
-        
-        // CRITICAL FIX: Because WebRTC explicitly locks the Camera2 device, standard setTorchMode crashes. 
-        // We will try standard Torch first. If WebRTC blocks it, we seamlessly failover to a maximum-brightness white screen strobe.
         var isFlashActive by remember { mutableStateOf(false) }
         val cameraManager = remember { context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager }
+
+        // CRITICAL FIX: UI Tracking for Video Saving state
+        var isCurrentlyRecording by remember { mutableStateOf(false) }
+        var isSavingVideo by remember { mutableStateOf(false) }
 
         LaunchedEffect(isFlashActive) {
             try {
                 val cameraId = cameraManager.cameraIdList.firstOrNull { cameraManager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK } ?: cameraManager.cameraIdList[0]
                 cameraManager.setTorchMode(cameraId, isFlashActive)
             } catch (e: Exception) {
-                // Failover to Screen Strobe if Camera is locked by WebRTC
                 val window = activity?.window
                 val params = window?.attributes
                 params?.screenBrightness = if (isFlashActive) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
@@ -133,9 +126,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         }
 
         DisposableEffect(Unit) {
-            tts = TextToSpeech(context) { status ->
-                if (status == TextToSpeech.SUCCESS) { tts?.language = Locale.US; tts?.setPitch(1.3f); tts?.setSpeechRate(1.2f) }
-            }
+            tts = TextToSpeech(context) { status -> if (status == TextToSpeech.SUCCESS) { tts?.language = Locale.US; tts?.setPitch(1.3f); tts?.setSpeechRate(1.2f) } }
             activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             onDispose { tts?.shutdown(); activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
         }
@@ -144,20 +135,58 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             if (isScreaming) {
                 val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0)
-                while(isScreaming && isActive) {
-                    tts?.speak("WARNING! INTRUDER DETECTED! LEAVE THE PREMISES IMMEDIATELY!", TextToSpeech.QUEUE_FLUSH, null, null)
-                    delay(4000)
-                }
+                while(isScreaming && isActive) { tts?.speak("WARNING! INTRUDER DETECTED! LEAVE THE PREMISES IMMEDIATELY!", TextToSpeech.QUEUE_FLUSH, null, null); delay(4000) }
             } else { tts?.stop() }
         }
 
+        // CRITICAL FIX: The Video Recording Loop scales the high-res 1080p frame down to the requested Video Resolution to save space
         LaunchedEffect(Unit) {
             while(isActive) {
                 try {
                     localRenderer.addFrameListener({ bitmap ->
                         try {
                             val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                            if (bmpCopy != null) { mjpegServer.updateFrame(bmpCopy); dvrEngine.appendFrame(bmpCopy); val old = latestBitmapRef.getAndSet(bmpCopy); old?.recycle() }
+                            if (bmpCopy != null) { 
+                                mjpegServer.updateFrame(bmpCopy)
+
+                                val now = System.currentTimeMillis()
+                                val endTime = HybridAIPipeline.activeVideoEndTime
+
+                                if (now < endTime && HybridAIPipeline.activeVideoPath != null) {
+                                    if (!isCurrentlyRecording) {
+                                        isCurrentlyRecording = true
+                                        isSavingVideo = false
+                                        try { dvrEngine.triggerRecording() } catch(e: Exception){}
+                                    }
+                                    
+                                    val vidRes = prefs.getInt("video_resolution", 720)
+                                    val scaledBmp = if (bmpCopy.height > vidRes) {
+                                        val ratio = bmpCopy.width.toFloat() / bmpCopy.height.toFloat()
+                                        Bitmap.createScaledBitmap(bmpCopy, (vidRes * ratio).toInt(), vidRes, true)
+                                    } else bmpCopy
+
+                                    try {
+                                        val method = dvrEngine.javaClass.getMethod("appendFrame", Bitmap::class.java)
+                                        method.invoke(dvrEngine, scaledBmp)
+                                    } catch(e: Exception){}
+
+                                    if (scaledBmp != bmpCopy) scaledBmp.recycle()
+
+                                } else {
+                                    if (isCurrentlyRecording) {
+                                        isCurrentlyRecording = false
+                                        isSavingVideo = true
+                                        try {
+                                            val stopMethod = dvrEngine.javaClass.getMethod("stopRecording")
+                                            stopMethod.invoke(dvrEngine)
+                                        } catch(e: Exception){}
+                                        CoroutineScope(Dispatchers.Main).launch { delay(3000); isSavingVideo = false }
+                                    }
+                                }
+
+                                val old = latestBitmapRef.getAndSet(bmpCopy)
+                                old?.recycle() 
+                            }
                         } catch(e: Exception) {}
                     }, 0.5f)
                 } catch(e: Exception) {}
@@ -184,9 +213,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
                 alertHistory.add(0, "[$timeStr] $text")
                 if (alertHistory.size > 50) alertHistory.removeLast()
-                val isSafe = text.contains("Safe", ignoreCase = true) || text.contains("CLEAR", ignoreCase = true) || event.type == "BIOMETRIC"
-                if (!isSafe && !text.contains("[SYSTEM]")) dvrEngine.triggerRecording()
-
+                
                 localServer.broadcast(Gson().toJson(mapOf("type" to "ALERT", "text" to text)))
                 dataChannel?.let { dc ->
                     if (dc.state() == DataChannel.State.OPEN) { val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8)); dc.send(DataChannel.Buffer(buffer, false)) }
@@ -222,7 +249,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 }
             }
             
-            // CRITICAL FIX: Ghost WebRTC Handlers. Instead of holding 1 dead peerConnection forever, we cleanly rebuild it upon new JOIN.
             fun buildPeerConnection() {
                 try { peerConnection?.dispose() } catch(e:Exception){}
                 peerConnection = rtcManager.createPeerConnection(observer)
@@ -240,12 +266,15 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                             val bytes = ByteArray(byteBuffer.remaining())
                             byteBuffer.get(bytes)
                             val command = String(bytes, Charsets.UTF_8)
-                            
                             try {
                                 val map = Gson().fromJson(command, Map::class.java)
                                 if (map["type"] == "SYNC_SETTINGS") {
                                     prefs.edit().apply {
                                         putFloat("scan_interval_sec", (map["scan_interval_sec"] as Double).toFloat())
+                                        putFloat("video_record_len", (map["video_record_len"] as Double).toFloat())
+                                        putInt("camera_resolution", (map["camera_resolution"] as Double).toInt())
+                                        putInt("video_resolution", (map["video_resolution"] as Double).toInt())
+                                        putInt("llm_resolution", (map["llm_resolution"] as Double).toInt())
                                         putFloat("confidence_threshold", (map["confidence_threshold"] as Double).toFloat())
                                         putString("prompt_usr", map["prompt_usr"] as? String ?: "")
                                         putBoolean("llm_enabled", map["llm_enabled"] as? Boolean ?: true)
@@ -253,7 +282,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                     }.apply()
                                     CoroutineScope(Dispatchers.Main).launch {
                                         scanIntervalMs = ((map["scan_interval_sec"] as Double).toFloat() * 1000).toLong()
-                                        alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer successfully.")
+                                        alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer. Restart stream to apply resolution.")
                                     }
                                     return
                                 }
@@ -272,7 +301,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 })
             }
             
-            buildPeerConnection() // Build initial
+            buildPeerConnection()
 
             fun processOffer(sdpStr: String) {
                 val sdpMap = Gson().fromJson(sdpStr, Map::class.java)
@@ -280,11 +309,10 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 peerConnection?.setRemoteDescription(SimpleSdpObserver(), sdp)
                 CoroutineScope(Dispatchers.Main).launch { streamStatus = "LIVE STREAM ACTIVE" }
             }
-            
             fun processJoin(signalerType: String) {
                 activeSignaler = signalerType
-                CoroutineScope(Dispatchers.Main).launch { streamStatus = "Viewer Connected via $signalerType! Gathering ICE..." }
-                buildPeerConnection() // Wipe the ghost connections out
+                CoroutineScope(Dispatchers.Main).launch { streamStatus = "Viewer Connected! Gathering ICE..." }
+                buildPeerConnection()
                 peerConnection?.createOffer(object : SimpleSdpObserver() {
                     override fun onCreateSuccess(sdp: SessionDescription?) {
                         sdp?.let {
@@ -298,11 +326,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
 
             firebaseClient?.onJoinReceived = { processJoin("FIREBASE") }
             firebaseClient?.onAnswerReceived = { processOffer(it) }
-            firebaseClient?.onIceCandidateReceived = { iceStr ->
-                val data = Gson().fromJson(iceStr, IceCandidateData::class.java)
-                peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp))
-            }
-
+            firebaseClient?.onIceCandidateReceived = { iceStr -> val data = Gson().fromJson(iceStr, IceCandidateData::class.java); peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp)) }
             localServer.onMessageReceived = { jsonStr ->
                 val map = Gson().fromJson(jsonStr, Map::class.java)
                 when (map["type"]) {
@@ -340,6 +364,14 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 
+                // CRITICAL FIX: "Saving Video" UI Indicator
+                if (isSavingVideo) {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0x99FFC107))) {
+                        Text(text = "💾 Saving Video to Vault...", color = Color.Black, modifier = Modifier.padding(8.dp), fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     items(alertHistory) { alert ->
                         val isSafe = alert.contains("Safe", ignoreCase = true) || alert.contains("CLEAR", ignoreCase = true) || alert.contains("Authorized Face")
