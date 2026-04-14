@@ -85,7 +85,7 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val confThreshold = prefs.getFloat("confidence_threshold", 0.60f)
         
-        // CRITICAL FIX: Single unified prompt from settings. 
+        // CRITICAL FIX: The custom prompt passes straight through, unedited.
         val customPrompt = prefs.getString("prompt_usr", "Report if you see a clock. If you do not see it, reply EXACTLY with CLEAR.") ?: ""
 
         try {
@@ -93,17 +93,16 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
                 suspendCancellableCoroutine<Boolean> { continuation ->
                     llmAnalyzer.analyze(
                         bitmap = bitmap, 
-                        systemPrompt = "You are a visual analysis AI.", // Minimal init prompt so the model focuses purely on customPrompt
+                        systemPrompt = "You are a direct computer vision evaluator.", 
                         userPrompt = customPrompt, 
                         onToken = { },
                         onDone = { text -> 
                             val output = text.trim()
                             
-                            // CRITICAL FIX: Kotlin explicitly evaluates if the AI obeyed the CLEAR command
-                            val isSafe = output.equals("CLEAR", ignoreCase = true)
+                            // CRITICAL FIX: Checks purely if the AI output contains the magic keyword CLEAR
+                            val isSafe = output.contains("CLEAR", ignoreCase = true)
                             
                             aiScope.launch {
-                                // If safe, no video and no popup (handled by EventRepository/AlertService). Else, video and popup.
                                 val vidPath = if (isSafe) null else "alert_${System.currentTimeMillis()}.mp4"
                                 val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Trigger found" else "🚨 $output"
                                 eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold, vidPath))
