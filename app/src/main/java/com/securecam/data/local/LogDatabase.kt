@@ -12,7 +12,13 @@ import javax.inject.Singleton
 
 @Entity(tableName = "security_logs")
 data class SecurityLogEntity(
-    @PrimaryKey(autoGenerate = true) var id: Int = 0, // FIX: Changed to var so Room KAPT can generate a setter
+    @androidx.room.PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val logTime: Long,
+    val type: String,
+    val description: String,
+    val confidence: Float,
+    val videoPath: String? = null
+) var id: Int = 0, // FIX: Changed to var so Room KAPT can generate a setter
     val logTime: Long, // FIX: Renamed from timestamp to avoid SQLite keyword conflicts
     val type: String,
     val description: String,
