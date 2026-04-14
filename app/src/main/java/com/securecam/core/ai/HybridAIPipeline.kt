@@ -25,6 +25,12 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
     private val biometricEngine = BiometricEngine(context)
     private var isLlmBusy = false
 
+    // CRITICAL FIX: The Rolling Timer prevents simultaneous overlapping alerts from creating duplicate blank videos
+    companion object {
+        var activeVideoPath: String? = null
+        var activeVideoEndTime: Long = 0L
+    }
+
     fun start() {
         llmAnalyzer.initialize {}
         aiScope.launch { try { biometricEngine.initialize() } catch (e: Exception) {} }
@@ -66,8 +72,15 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
                                 }
                                 if (recognizedNames.isNotEmpty()) {
                                     val namesList = recognizedNames.joinToString(", ")
-                                    val vidPath = "face_${System.currentTimeMillis()}.mp4"
-                                    eventRepository.emitEvent(SecurityEvent("BIOMETRIC", "🛡️ Authorized Face(s) Detected: $namesList", 1.0f, vidPath))
+                                    
+                                    // Rolling Timer Logic for Faces
+                                    val now = System.currentTimeMillis()
+                                    val recordLenMs = (prefs.getFloat("video_record_len", 15f) * 1000).toLong()
+                                    if (now > activeVideoEndTime) { activeVideoPath = "face_${now}.mp4" }
+                                    activeVideoEndTime = now + recordLenMs
+                                    prefs.edit().putString("active_dvr_file", activeVideoPath).apply()
+
+                                    eventRepository.emitEvent(SecurityEvent("BIOMETRIC", "🛡️ Authorized Face(s) Detected: $namesList", 1.0f, activeVideoPath))
                                     skipLlm = true
                                 }
                             }
@@ -84,26 +97,35 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
         isLlmBusy = true
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val confThreshold = prefs.getFloat("confidence_threshold", 0.60f)
-        
-        // CRITICAL FIX: The custom prompt passes straight through, unedited.
         val customPrompt = prefs.getString("prompt_usr", "Report if you see a clock. If you do not see it, reply EXACTLY with CLEAR.") ?: ""
+        val recordLenMs = (prefs.getFloat("video_record_len", 15f) * 1000).toLong()
+        val llmResolution = prefs.getInt("llm_resolution", 280) // Captures token budget from settings
 
         try {
             withTimeoutOrNull(15000L) {
                 suspendCancellableCoroutine<Boolean> { continuation ->
+                    val sysPrompt = "You are a direct computer vision evaluator. Process this image using a token budget of $llmResolution tokens."
                     llmAnalyzer.analyze(
                         bitmap = bitmap, 
-                        systemPrompt = "You are a direct computer vision evaluator.", 
+                        systemPrompt = sysPrompt, 
                         userPrompt = customPrompt, 
                         onToken = { },
                         onDone = { text -> 
                             val output = text.trim()
-                            
-                            // CRITICAL FIX: Checks purely if the AI output contains the magic keyword CLEAR
                             val isSafe = output.contains("CLEAR", ignoreCase = true)
                             
                             aiScope.launch {
-                                val vidPath = if (isSafe) null else "alert_${System.currentTimeMillis()}.mp4"
+                                val now = System.currentTimeMillis()
+                                if (!isSafe) {
+                                    // Rolling Timer Logic for AI Threats
+                                    if (now > activeVideoEndTime) {
+                                        activeVideoPath = "alert_${now}.mp4"
+                                    }
+                                    activeVideoEndTime = now + recordLenMs
+                                    prefs.edit().putString("active_dvr_file", activeVideoPath).apply()
+                                }
+
+                                val vidPath = if (isSafe) null else activeVideoPath
                                 val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Trigger found" else "🚨 $output"
                                 eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold, vidPath))
                             }
