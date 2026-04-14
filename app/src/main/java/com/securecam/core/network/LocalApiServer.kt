@@ -13,7 +13,6 @@ class LocalApiServer(port: Int, val token: String, val context: Context) : NanoH
         return when (session.uri) {
             "/api/logs" -> { 
                 try {
-                    // CRITICAL FIX: The Room Database is always named "securecam_db" exactly. This hardcoded fix guarantees Viewer sync works offline.
                     val activeDb = context.getDatabasePath("securecam_db")
                     if (!activeDb.exists()) return newFixedLengthResponse(Response.Status.OK, "application/json", "[]")
 
@@ -51,6 +50,7 @@ class LocalApiServer(port: Int, val token: String, val context: Context) : NanoH
                 val f = File(context.filesDir, session.parameters["file"]?.firstOrNull() ?: "")
                 if (!f.exists()) return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "404")
                 
+                // CRITICAL FIX: HTTP 206 Partial Content format required by ExoPlayer to stream network MP4 files
                 val rangeHeader = session.headers["range"]
                 if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
                     val range = rangeHeader.substring(6).split("-")
@@ -61,7 +61,7 @@ class LocalApiServer(port: Int, val token: String, val context: Context) : NanoH
                     val fis = FileInputStream(f)
                     fis.skip(start)
                     val res = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, "video/mp4", fis, contentLength)
-                    res.addHeader("Content-Range", "bytes ${start}-${end}/${f.length()}")
+                    res.addHeader("Content-Range", "bytes $start-$end/${f.length()}")
                     res.addHeader("Accept-Ranges", "bytes")
                     return res
                 } else {
