@@ -33,21 +33,25 @@ class AlertService : Service() {
         startForeground(1, buildNotification("SecureCam Background Service Active"))
         
         val prefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
-        val appRole = prefs.getString("app_role", "Camera") ?: "Camera"
 
-        if (appRole == "Camera") {
-            serviceScope.launch {
-                eventRepository.securityEvents.collect { event ->
+        // CAMERA MODE: Local AI Tracking
+        serviceScope.launch {
+            eventRepository.securityEvents.collect { event ->
+                val appRole = prefs.getString("app_role", "Camera") ?: "Camera"
+                if (appRole == "Camera") {
                     val isSafe = event.description.contains("Safe", ignoreCase = true) || event.description.contains("CLEAR", ignoreCase = true)
                     if (!isSafe && !event.description.contains("[SYSTEM]")) {
                         showPopupNotification(event.description)
                     }
                 }
             }
-        } else if (appRole == "Viewer") {
-            // CRITICAL FIX: Background HTTP Poller that quietly syncs old logs to the Viewer's local database
-            serviceScope.launch {
-                while (isActive) {
+        }
+
+        // VIEWER MODE: Dynamic HTTP Poller for Offline Logs
+        serviceScope.launch {
+            while (isActive) {
+                val appRole = prefs.getString("app_role", "Camera") ?: "Camera"
+                if (appRole == "Viewer") {
                     try {
                         val ip = prefs.getString("target_ip", "") ?: ""
                         val token = prefs.getString("security_token", "") ?: ""
@@ -73,19 +77,22 @@ class AlertService : Service() {
                             }
                         }
                     } catch(e: Exception){}
-                    delay(15000) // Background syncs every 15 seconds
                 }
+                delay(15000) 
             }
+        }
 
-            // Real-time TCP Listener for Instant Popups and DB Insertion
-            serviceScope.launch {
-                while (isActive) {
+        // VIEWER MODE: Dynamic TCP Listener for Instant Popups
+        serviceScope.launch {
+            while (isActive) {
+                val appRole = prefs.getString("app_role", "Camera") ?: "Camera"
+                if (appRole == "Viewer") {
                     try {
                         val ip = prefs.getString("target_ip", "") ?: ""
                         if (ip.isNotBlank()) {
                             viewerSocket = Socket(ip, 8081)
                             val reader = BufferedReader(InputStreamReader(viewerSocket!!.getInputStream()))
-                            while (isActive) {
+                            while (isActive && prefs.getString("app_role", "Camera") == "Viewer") {
                                 val line = reader.readLine() ?: break
                                 val map = Gson().fromJson(line, Map::class.java)
                                 if (map["type"] == "ALERT") {
@@ -110,8 +117,8 @@ class AlertService : Service() {
                             }
                         }
                     } catch (e: Exception) {}
-                    delay(5000)
                 }
+                delay(5000)
             }
         }
     }
