@@ -127,6 +127,7 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                     "camera_resolution" to prefs.getInt("camera_resolution", 1080),
                     "video_resolution" to prefs.getInt("video_resolution", 720),
                     "llm_resolution" to prefs.getInt("llm_resolution", 280),
+                    "ai_backend" to (prefs.getString("ai_backend", "CPU") ?: "CPU"),
                     "confidence_threshold" to prefs.getFloat("confidence_threshold", 0.60f).toDouble(),
                     "prompt_usr" to prefs.getString("prompt_usr", ""),
                     "llm_enabled" to prefs.getBoolean("llm_enabled", true),
@@ -212,6 +213,8 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var videoRecordLen by remember { mutableStateOf(prefs.getFloat("video_record_len", 15f).coerceIn(5f, 60f)) }
     var llmResolution by remember { mutableStateOf(prefs.getInt("llm_resolution", 280)) }
     var resExpanded by remember { mutableStateOf(false) }
+    var aiBackend by remember { mutableStateOf(prefs.getString("ai_backend", "CPU") ?: "CPU") }
+    var backendExpanded by remember { mutableStateOf(false) }
 
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
     var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
@@ -325,7 +328,7 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Upload a photo. The AI will auto-crop the face. Faces are NOT synced remotely.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text("Upload a photo. The AI will auto-crop the face. Your Biometric Vault is securely synced to the Camera.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
             Button(onClick = { photoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("📸 Upload Face Photo") }
             if (faces.isNotEmpty()) {
@@ -354,6 +357,15 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Slider(value = videoRecordLen, onValueChange = { videoRecordLen = it }, onValueChangeFinished = { prefs.edit().putFloat("video_record_len", videoRecordLen).apply() }, valueRange = 5f..60f)
 
             Spacer(modifier = Modifier.height(24.dp))
+            Text("AI Hardware Acceleration", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            ExposedDropdownMenuBox(expanded = backendExpanded, onExpandedChange = { backendExpanded = !backendExpanded }) {
+                OutlinedTextField(value = "$aiBackend Engine", onValueChange = {}, readOnly = true, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = backendExpanded) }, modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors())
+                ExposedDropdownMenu(expanded = backendExpanded, onDismissRequest = { backendExpanded = false }) {
+                    listOf("CPU", "GPU", "NPU").forEach { engine -> DropdownMenuItem(text = { Text("$engine Engine") }, onClick = { aiBackend = engine; prefs.edit().putString("ai_backend", engine).apply(); backendExpanded = false }) }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
             Text("Gemma 4 Vision Resolution (Token Budget)", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Higher tokens (1120) allows the AI to zoom in and detect small objects better. Lower tokens (70) is significantly faster but blurrier.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
