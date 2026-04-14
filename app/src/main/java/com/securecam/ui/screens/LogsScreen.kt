@@ -46,8 +46,10 @@ fun LogsScreen(navController: NavController) {
     var logs by remember { mutableStateOf<List<SecurityLogEntity>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var selectedVideoUrl by remember { mutableStateOf<String?>(null) }
+    
     var selectedTabIndex by remember { mutableStateOf(0) }
     val tabs = listOf("All", "Alerts", "Faces", "Normal")
+
     val coroutineScope = rememberCoroutineScope()
 
     fun fetchLogs() {
@@ -62,7 +64,7 @@ fun LogsScreen(navController: NavController) {
                         val json = connection.inputStream.bufferedReader().readText()
                         val type = object : TypeToken<List<SecurityLogEntity>>() {}.type
                         val remoteLogs: List<SecurityLogEntity> = Gson().fromJson(json, type)
-                        withContext(Dispatchers.Main) { logs = remoteLogs.sortedByDescending { it.logTime } }
+                        withContext(Dispatchers.Main) { logs = remoteLogs }
                     }
                 } else {
                     withContext(Dispatchers.Main) { logs = emptyList() }
@@ -106,13 +108,11 @@ fun LogsScreen(navController: NavController) {
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
             modifier = Modifier.fillMaxSize().padding(16.dp),
             text = {
-                val exoPlayer = remember { 
-                    ExoPlayer.Builder(context).build().apply { 
-                        setMediaItem(MediaItem.fromUri(selectedVideoUrl!!))
-                        prepare()
-                        playWhenReady = true 
-                    }
-                }
+                val exoPlayer = remember { ExoPlayer.Builder(context).build().apply {
+                    setMediaItem(MediaItem.fromUri(selectedVideoUrl!!))
+                    prepare()
+                    playWhenReady = true
+                }}
                 DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
                 AndroidView(factory = { PlayerView(context).apply { player = exoPlayer } }, modifier = Modifier.fillMaxSize())
             },
@@ -120,21 +120,24 @@ fun LogsScreen(navController: NavController) {
         )
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Security Vault") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }, actions = { IconButton(onClick = { fetchLogs() }) { Text("🔄") } }) }) { padding ->
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Security Vault") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }, actions = { IconButton(onClick = { fetchLogs() }) { Text("🔄") } }) }
+    ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             TabRow(selectedTabIndex = selectedTabIndex) {
                 tabs.forEachIndexed { index, title -> Tab(selected = selectedTabIndex == index, onClick = { selectedTabIndex = index }, text = { Text(title) }) }
             }
-            if (isLoading) { 
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() } 
-            } else if (filteredLogs.isEmpty()) { 
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No logs found.", color = Color.Gray) } 
+            if (isLoading) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            } else if (filteredLogs.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No logs found.", color = Color.Gray) }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     items(filteredLogs) { log ->
                         val isSafe = log.description.contains("Safe", ignoreCase = true)
                         val bgColor = if (isSafe) Color(0x224CAF50) else Color(0x22F44336)
                         val timeStr = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(log.logTime))
+                        
                         Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), colors = CardDefaults.cardColors(containerColor = bgColor)) {
                             Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(modifier = Modifier.weight(1f)) {
@@ -143,9 +146,9 @@ fun LogsScreen(navController: NavController) {
                                     Text(log.description, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                                 }
                                 if (log.videoPath != null) {
-                                    IconButton(onClick = { if (appRole == "Viewer") selectedVideoUrl = "http://$targetIp:8082/api/video?file=${log.videoPath}&token=$token" }) {
-                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
-                                    }
+                                    IconButton(onClick = { 
+                                        if (appRole == "Viewer") selectedVideoUrl = "http://$targetIp:8082/api/video?file=${log.videoPath}&token=$token" 
+                                    }) { Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp)) }
                                 }
                                 IconButton(onClick = { deleteLog(log.id) }) { Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red) }
                             }
