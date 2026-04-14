@@ -2,51 +2,93 @@ package com.securecam.core.network
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.os.Environment
-import kotlinx.coroutines.*
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.view.Surface
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class DvrEngine(private val context: Context) {
+    private var codec: MediaCodec? = null
+    private var muxer: MediaMuxer? = null
+    private var surface: Surface? = null
+    private var trackIndex = -1
     private var isRecording = false
-    private var frameCount = 0
-    private var currentDir: File? = null
+    private var muxerStarted = false
+    private var frameCount = 0L
 
-    fun triggerRecording() {
+    fun triggerRecording(fileName: String, width: Int, height: Int) {
         if (isRecording) return
-        isRecording = true
-        frameCount = 0
-        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-        currentDir = File(context.getExternalFilesDir(Environment.DIRECTORY_MOVIES), "SecureCam_Alert_$timeStamp")
-        currentDir?.mkdirs()
-        
-        CoroutineScope(Dispatchers.IO).launch {
-            delay(10000)
-            isRecording = false
-        }
+        try {
+            val file = File(context.filesDir, fileName)
+            muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                setInteger(MediaFormat.KEY_BIT_RATE, 2000000)
+                setInteger(MediaFormat.KEY_FRAME_RATE, 5)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            }
+            codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            codec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            surface = codec?.createInputSurface()
+            codec?.start()
+            isRecording = true
+            muxerStarted = false
+            frameCount = 0L
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     fun appendFrame(bitmap: Bitmap) {
-        if (!isRecording || currentDir == null) return
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val file = File(currentDir, String.format("frame_%03d.jpg", frameCount++))
-                file.outputStream().use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, 60, out) }
-            } catch(e: Exception){}
-        }
+        if (!isRecording || surface == null) return
+        try {
+            val canvas = surface?.lockCanvas(null)
+            canvas?.drawBitmap(bitmap, 0f, 0f, null)
+            surface?.unlockCanvasAndPost(canvas!!)
+            drainCodec(false)
+            frameCount++
+        } catch (e: Exception) {}
     }
 
     fun stopRecording() {
+        if (!isRecording) return
+        isRecording = false
         try {
-            this.javaClass.declaredFields.forEach { field ->
-                field.isAccessible = true
-                val obj = field.get(this)
-                if (obj is android.media.MediaMuxer) { obj.stop(); obj.release(); field.set(this, null) }
-                if (obj is android.media.MediaCodec) { obj.stop(); obj.release(); field.set(this, null) }
+            drainCodec(true)
+            codec?.stop()
+            codec?.release()
+            if (muxerStarted) {
+                muxer?.stop()
             }
-            this.javaClass.declaredFields.find { it.name == "isRecording" }?.let { it.isAccessible = true; it.set(this, false) }
-        } catch(e: Exception) {}
+            muxer?.release()
+        } catch (e: Exception) {}
+        codec = null; muxer = null; surface = null
+    }
+
+    private fun drainCodec(endOfStream: Boolean) {
+        if (endOfStream) codec?.signalEndOfInputStream()
+        val bufferInfo = MediaCodec.BufferInfo()
+        while (true) {
+            val status = codec?.dequeueOutputBuffer(bufferInfo, 10000) ?: break
+            if (status == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                if (!endOfStream) break else continue
+            } else if (status == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                if (!muxerStarted) {
+                    trackIndex = muxer?.addTrack(codec!!.outputFormat) ?: -1
+                    muxer?.start()
+                    muxerStarted = true
+                }
+            } else if (status >= 0) {
+                val encodedData = codec?.getOutputBuffer(status)
+                if (encodedData != null && bufferInfo.size != 0) {
+                    encodedData.position(bufferInfo.offset)
+                    encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                    bufferInfo.presentationTimeUs = frameCount * 200000L // 5 fps = 200ms per frame
+                    muxer?.writeSampleData(trackIndex, encodedData, bufferInfo)
+                }
+                codec?.releaseOutputBuffer(status, false)
+                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+            }
+        }
     }
 }
