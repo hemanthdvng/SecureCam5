@@ -31,6 +31,8 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
         var activeVideoEndTime: Long = 0L
     }
 
+    fun isBusy(): Boolean = isLlmBusy
+
     fun start() {
         llmAnalyzer.initialize {}
         aiScope.launch { try { biometricEngine.initialize() } catch (e: Exception) {} }
