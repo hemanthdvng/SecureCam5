@@ -1,8 +1,9 @@
 package com.securecam.core.ai
 
 import android.content.Context
-import android.os.Build
 import android.graphics.Bitmap
+import android.os.Build
+import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
@@ -36,7 +37,8 @@ class LlmVisionAnalyzer(private val context: Context) {
         initialized.set(false)
         busy.set(false)
         try { engine?.close() } catch (e: Exception) {} finally { engine = null }
-        System.gc() // CRITICAL: Force clear VRAM instantly to prevent OOM on reopen
+        // CRITICAL FIX: Force clear VRAM instantly to prevent OOM on reopen
+        System.gc() 
     }
 
     @OptIn(ExperimentalApi::class)
@@ -57,9 +59,10 @@ class LlmVisionAnalyzer(private val context: Context) {
                 val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
                 backendType = prefs.getString("ai_backend", "CPU") ?: "CPU"
 
+                // LiteRT GPU handling
                 val backendConfig = when (backendType) {
                     "GPU" -> Backend.GPU()
-                    "NPU" -> Backend.CPU() // LiteRT NPU delegates require specific hardware bindings, falling back to CPU safely if unsupported
+                    "NPU" -> Backend.CPU()
                     else -> Backend.CPU()
                 }
 
@@ -74,33 +77,59 @@ class LlmVisionAnalyzer(private val context: Context) {
                 initialized.set(true)
                 withContext(Dispatchers.Main) { onResult(InitResult.Success) }
             } catch (e: Throwable) {
-                withContext(Dispatchers.Main) { onResult(InitResult.Error("Init failed ($backendType Error): ${e.message}")) }
+                withContext(Dispatchers.Main) { 
+                    onResult(InitResult.Error("Init failed ($backendType Error): ${e.message}")) 
+                }
             }
         }
     }
 
     @OptIn(ExperimentalApi::class)
-    fun analyze(bitmap: Bitmap, systemPrompt: String, userPrompt: String, onToken: (String) -> Unit, onDone: (String) -> Unit, onError: (String) -> Unit) {
-        if (!initialized.get()) { bitmap.recycle(); onError("Engine not initialized yet"); return }
-        if (!busy.compareAndSet(false, true)) { bitmap.recycle(); onError("Engine is busy"); return }
+    fun analyze(
+        bitmap: Bitmap,
+        systemPrompt: String,
+        userPrompt: String,
+        onToken: (String) -> Unit,
+        onDone: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        if (!initialized.get()) {
+            bitmap.recycle()
+            onError("Engine not initialized yet")
+            return 
+        }
+        if (!busy.compareAndSet(false, true)) {
+            bitmap.recycle()
+            onError("Engine is currently busy processing a previous frame")
+            return
+        }
 
         llmScope.launch {
             try {
                 val eng = engine ?: throw IllegalStateException("Engine null")
-                val conversation = eng.createConversation(ConversationConfig(samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.4), systemInstruction = Contents.of(systemPrompt)))
+                val conversation = eng.createConversation(
+                    ConversationConfig(
+                        samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.4),
+                        systemInstruction = Contents.of(systemPrompt)
+                    )
+                )
 
-                // CRITICAL FIX: Raw 1080p (1920px) image fed directly into AI to support 1120 token budget
                 val imageBytes = bitmap.toFastBytes()
-                val contents = Contents.of(listOf(Content.ImageBytes(imageBytes), Content.Text(userPrompt)))
+                val contents = Contents.of(listOf(
+                    Content.ImageBytes(imageBytes),
+                    Content.Text(userPrompt)
+                ))
 
                 val sb = StringBuilder()
-                conversation.sendMessageAsync(contents).collect { message -> sb.append(message.toString()) }
+                conversation.sendMessageAsync(contents).collect { message ->
+                    sb.append(message.toString())
+                }
                 
                 withContext(Dispatchers.Main) { onDone(sb.toString().trim()) }
                 conversation.close()
 
             } catch (e: Throwable) {
-                withContext(Dispatchers.Main) { onError(e.message ?: "Native Inference Error") }
+                withContext(Dispatchers.Main) { onError(e.message ?: "Native Inference Fatal Error") }
             } finally {
                 busy.set(false)
                 if (!bitmap.isRecycled) bitmap.recycle() 
@@ -108,12 +137,17 @@ class LlmVisionAnalyzer(private val context: Context) {
         }
     }
 
-    private fun Bitmap.toFastBytes(): ByteArray {
+    // CRITICAL FIX: Fast WEBP Compression and Full 1920 HD Support
+    private fun Bitmap.toFastBytes(maxDim: Int = 1920): ByteArray {
+        val scale = if (maxOf(width, height) > maxDim) maxDim.toFloat() / maxOf(width, height) else 1f
+        val scaled = if (scale < 1f) Bitmap.createScaledBitmap(this, (width * scale).toInt().coerceAtLeast(1), (height * scale).toInt().coerceAtLeast(1), true) else this
+        
         val out = ByteArrayOutputStream()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            this.compress(Bitmap.CompressFormat.WEBP_LOSSY, 70, out) // Hardware accelerated on modern Android
+            scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, 70, out) 
         } else {
-            this.compress(Bitmap.CompressFormat.JPEG, 60, out) // Lighter quality saves massive CPU cycles
+            scaled.compress(Bitmap.CompressFormat.JPEG, 60, out) 
         }
         return out.toByteArray()
     }
+}
