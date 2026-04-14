@@ -19,7 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight  // CRITICAL FIX: Restored missing compiler import
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -108,7 +108,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val apiServer = remember { LocalApiServer(8082, securityToken, context) }
         val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
         
-        // CRITICAL FIX: Flash Logic Tracking. WebRTC defaults to the Front camera initially.
         var isFrontCamera by remember { mutableStateOf(true) }
         var isFlashActive by remember { mutableStateOf(false) }
         val cameraManager = remember { context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager }
@@ -118,18 +117,15 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
 
         LaunchedEffect(isFlashActive) {
             if (isFrontCamera) {
-                // Front Camera: Use Screen Strobe to light up face
                 val window = activity?.window
                 val params = window?.attributes
                 params?.screenBrightness = if (isFlashActive) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
                 window?.attributes = params
             } else {
-                // Back Camera: Use Physical LED
                 try {
                     val cameraId = cameraManager.cameraIdList.firstOrNull { cameraManager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK } ?: cameraManager.cameraIdList[0]
                     cameraManager.setTorchMode(cameraId, isFlashActive)
                 } catch (e: Exception) {
-                    // Fallback to screen strobe just in case WebRTC hard-locks the API
                     val window = activity?.window
                     val params = window?.attributes
                     params?.screenBrightness = if (isFlashActive) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
@@ -155,6 +151,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         LaunchedEffect(Unit) {
             while(isActive) {
                 try {
+                    // CRITICAL FIX: Changed 0.5f to 1.0f to pass raw uncompressed 1080p frame directly to AI and Recording Engine
                     localRenderer.addFrameListener({ bitmap ->
                         try {
                             val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
@@ -165,33 +162,31 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                 val endTime = HybridAIPipeline.activeVideoEndTime
 
                                 if (now < endTime && HybridAIPipeline.activeVideoPath != null) {
-                                    if (!isCurrentlyRecording) {
-                                        isCurrentlyRecording = true
-                                        isSavingVideo = false
-                                        try { dvrEngine.triggerRecording() } catch(e: Exception){}
-                                    }
-                                    
                                     val vidRes = prefs.getInt("video_resolution", 720)
                                     val scaledBmp = if (bmpCopy.height > vidRes) {
                                         val ratio = bmpCopy.width.toFloat() / bmpCopy.height.toFloat()
                                         Bitmap.createScaledBitmap(bmpCopy, (vidRes * ratio).toInt(), vidRes, true)
                                     } else bmpCopy
 
-                                    try {
-                                        val method = dvrEngine.javaClass.getMethod("appendFrame", Bitmap::class.java)
-                                        method.invoke(dvrEngine, scaledBmp)
-                                    } catch(e: Exception){}
-
+                                    if (!isCurrentlyRecording) {
+                                        isCurrentlyRecording = true
+                                        isSavingVideo = false
+                                        try {
+                                            // MediaCodec requires width/height to be even numbers
+                                            val w = if (scaledBmp.width % 2 != 0) scaledBmp.width - 1 else scaledBmp.width
+                                            val h = if (scaledBmp.height % 2 != 0) scaledBmp.height - 1 else scaledBmp.height
+                                            dvrEngine.triggerRecording(HybridAIPipeline.activeVideoPath ?: "alert_${now}.mp4", w, h) 
+                                        } catch(e: Exception){}
+                                    }
+                                    
+                                    try { dvrEngine.appendFrame(scaledBmp) } catch(e: Exception){}
                                     if (scaledBmp != bmpCopy) scaledBmp.recycle()
 
                                 } else {
                                     if (isCurrentlyRecording) {
                                         isCurrentlyRecording = false
                                         isSavingVideo = true
-                                        try {
-                                            val stopMethod = dvrEngine.javaClass.getMethod("stopRecording")
-                                            stopMethod.invoke(dvrEngine)
-                                        } catch(e: Exception){}
+                                        try { dvrEngine.stopRecording() } catch(e: Exception){}
                                         CoroutineScope(Dispatchers.Main).launch { delay(3000); isSavingVideo = false }
                                     }
                                 }
@@ -200,7 +195,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                 old?.recycle() 
                             }
                         } catch(e: Exception) {}
-                    }, 0.5f)
+                    }, 1.0f)
                 } catch(e: Exception) {}
                 delay(200) 
             }
@@ -222,11 +217,13 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         LaunchedEffect(Unit) {
             viewModel.eventRepository.securityEvents.collect { event ->
                 val text = event.description
+                val vidPath = event.videoPath
                 val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
                 alertHistory.add(0, "[$timeStr] $text")
                 if (alertHistory.size > 50) alertHistory.removeLast()
                 
-                localServer.broadcast(Gson().toJson(mapOf("type" to "ALERT", "text" to text)))
+                // CRITICAL FIX: The Camera now broadcasts the videoPath over the socket so the Viewer gets it instantly
+                localServer.broadcast(Gson().toJson(mapOf("type" to "ALERT", "text" to text, "videoPath" to vidPath)))
                 dataChannel?.let { dc ->
                     if (dc.state() == DataChannel.State.OPEN) { val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8)); dc.send(DataChannel.Buffer(buffer, false)) }
                 }
@@ -282,7 +279,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                             CoroutineScope(Dispatchers.Main).launch {
                                 when (command) {
                                     "CMD_SIREN" -> { isScreaming = !isScreaming; alertHistory.add(0, "[SYSTEM] Siren toggled.") }
-                                    // CRITICAL FIX: Track which camera is active to toggle proper Flash logic
                                     "CMD_SWITCH_CAM" -> { isFrontCamera = !isFrontCamera; rtcManager.switchCamera(); alertHistory.add(0, "[SYSTEM] Lens switched.") }
                                     "CMD_FORCE_SCAN" -> { forceScanTrigger++; alertHistory.add(0, "[SYSTEM] Scan forced.") }
                                     "CMD_FLASH" -> { isFlashActive = !isFlashActive; alertHistory.add(0, "[SYSTEM] Camera Flash toggled.") }
@@ -327,7 +323,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     "DISCONNECT" -> { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on WiFi" } }
                     "ANSWER" -> { processOffer(Gson().toJson(mapOf("type" to map["typeSDP"], "sdp" to map["sdp"]))) }
                     "ICE" -> { peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String)) }
-                    // CRITICAL FIX: Settings Sync interceptor added to LocalServer
                     "SYNC_SETTINGS" -> {
                         prefs.edit().apply {
                             (map["scan_interval_sec"] as? Double)?.let { putFloat("scan_interval_sec", it.toFloat()) }
