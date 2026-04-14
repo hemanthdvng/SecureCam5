@@ -58,27 +58,22 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor() : ViewModel() {
-    
     var isImporting by mutableStateOf(false)
         private set
     var currentModelName by mutableStateOf("None")
     var draftCroppedBitmap by mutableStateOf<Bitmap?>(null)
         private set
     var draftFaceName by mutableStateOf("")
-
     private val _registeredFaces = MutableStateFlow<List<RegisteredFace>>(emptyList())
     val registeredFaces = _registeredFaces.asStateFlow()
 
     fun loadPrefs(context: Context) {
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         currentModelName = prefs.getString("selected_model", "None") ?: "None"
-        val json = prefs.getString("authorized_faces", "[]") ?: "[]"
         try {
             val type = object : TypeToken<List<RegisteredFace>>() {}.type
-            _registeredFaces.value = Gson().fromJson(json, type) ?: emptyList()
-        } catch (e: Exception) {
-            _registeredFaces.value = emptyList()
-        }
+            _registeredFaces.value = Gson().fromJson(prefs.getString("authorized_faces", "[]") ?: "[]", type) ?: emptyList()
+        } catch (e: Exception) { _registeredFaces.value = emptyList() }
     }
 
     fun removeFace(context: Context, id: String) {
@@ -100,30 +95,19 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                 context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", fileName).apply()
                 currentModelName = fileName
                 withContext(Dispatchers.Main) { Toast.makeText(context, "Model $fileName Loaded!", Toast.LENGTH_LONG).show() }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Import Failed: ${e.message}", Toast.LENGTH_LONG).show() }
-            } finally { isImporting = false }
+            } catch (e: Exception) {} finally { isImporting = false }
         }
     }
 
     fun downloadCloudModel(context: Context) {
         try {
             val url = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
-            val request = DownloadManager.Request(Uri.parse(url))
-                .setTitle("Gemma AI Model")
-                .setDescription("Downloading SecureCam AI Engine...")
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalFilesDir(context, null, "gemma-4-E2B-it.litertlm")
-            
-            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            dm.enqueue(request)
+            val request = DownloadManager.Request(Uri.parse(url)).setTitle("Gemma AI Model").setDescription("Downloading SecureCam AI Engine...").setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED).setDestinationInExternalFilesDir(context, null, "gemma-4-E2B-it.litertlm")
+            (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
             Toast.makeText(context, "Download started! Check your notification shade.", Toast.LENGTH_LONG).show()
-            
             context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("selected_model", "gemma-4-E2B-it.litertlm").apply()
             currentModelName = "gemma-4-E2B-it.litertlm"
-        } catch (e: Exception) {
-            Toast.makeText(context, "Failed to start download: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        } catch (e: Exception) {}
     }
 
     fun syncToCamera(context: Context, ip: String, token: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
@@ -137,6 +121,8 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                     "type" to "SYNC_SETTINGS",
                     "scan_interval_sec" to prefs.getFloat("scan_interval_sec", 5f).toDouble(),
                     "video_record_len" to prefs.getFloat("video_record_len", 15f).toDouble(),
+                    "camera_resolution" to prefs.getInt("camera_resolution", 1080),
+                    "video_resolution" to prefs.getInt("video_resolution", 720),
                     "llm_resolution" to prefs.getInt("llm_resolution", 280),
                     "confidence_threshold" to prefs.getFloat("confidence_threshold", 0.60f).toDouble(),
                     "prompt_usr" to prefs.getString("prompt_usr", ""),
@@ -146,9 +132,7 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                 out.println(Gson().toJson(syncData))
                 socket.close()
                 withContext(Dispatchers.Main) { onSuccess() }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { onError(e.message ?: "Connection Refused") }
-            }
+            } catch (e: Exception) { withContext(Dispatchers.Main) { onError(e.message ?: "Connection Refused") } }
         }
     }
 
@@ -156,34 +140,16 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             withContext(Dispatchers.Main) { Toast.makeText(context, "Scanning for face...", Toast.LENGTH_SHORT).show() }
             try {
-                var bmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ -> decoder.isMutableRequired = true; decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE }
-                } else { MediaStore.Images.Media.getBitmap(context.contentResolver, uri) }
-                if (bmp.width > 1500 || bmp.height > 1500) {
-                    val scale = 1500f / maxOf(bmp.width, bmp.height)
-                    bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
-                }
-                val inputImage = InputImage.fromBitmap(bmp, 0)
-                val options = FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()
-                val detector = FaceDetection.getClient(options)
-                val facesList = detector.process(inputImage).await()
-                if (facesList.isEmpty()) {
-                    withContext(Dispatchers.Main) { Toast.makeText(context, "No face found. Try a clearer photo.", Toast.LENGTH_LONG).show() }
-                    return@launch
-                }
+                var bmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) { ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ -> decoder.isMutableRequired = true; decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE } } else { MediaStore.Images.Media.getBitmap(context.contentResolver, uri) }
+                if (bmp.width > 1500 || bmp.height > 1500) { val scale = 1500f / maxOf(bmp.width, bmp.height); bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) }
+                val facesList = FaceDetection.getClient(FaceDetectorOptions.Builder().setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST).build()).process(InputImage.fromBitmap(bmp, 0)).await()
+                if (facesList.isEmpty()) { withContext(Dispatchers.Main) { Toast.makeText(context, "No face found. Try a clearer photo.", Toast.LENGTH_LONG).show() }; return@launch }
                 val bounds = facesList.first().boundingBox
                 val size = maxOf(bounds.width(), bounds.height())
-                var left = bounds.centerX() - size / 2
-                var top = bounds.centerY() - size / 2
-                left = left.coerceAtLeast(0)
-                top = top.coerceAtLeast(0)
-                val w = minOf(size, bmp.width - left)
-                val h = minOf(size, bmp.height - top)
-                val croppedBmp = Bitmap.createBitmap(bmp, left, top, w, h)
-                withContext(Dispatchers.Main) {
-                    draftCroppedBitmap = croppedBmp
-                    draftFaceName = "Face ${_registeredFaces.value.size + 1}"
-                }
+                val left = (bounds.centerX() - size / 2).coerceAtLeast(0)
+                val top = (bounds.centerY() - size / 2).coerceAtLeast(0)
+                val croppedBmp = Bitmap.createBitmap(bmp, left, top, minOf(size, bmp.width - left), minOf(size, bmp.height - top))
+                withContext(Dispatchers.Main) { draftCroppedBitmap = croppedBmp; draftFaceName = "Face ${_registeredFaces.value.size + 1}" }
             } catch(e: Exception) {}
         }
     }
@@ -198,8 +164,7 @@ class SettingsViewModel @Inject constructor() : ViewModel() {
                 val embedding = biometricEngine.getFaceEmbedding(bmp)
                 biometricEngine.close()
                 if (embedding != null) {
-                    val newFace = RegisteredFace(UUID.randomUUID().toString(), draftFaceName, embedding)
-                    val updatedList = _registeredFaces.value + newFace
+                    val updatedList = _registeredFaces.value + RegisteredFace(UUID.randomUUID().toString(), draftFaceName, embedding)
                     context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE).edit().putString("authorized_faces", Gson().toJson(updatedList)).apply()
                     _registeredFaces.value = updatedList
                     withContext(Dispatchers.Main) { Toast.makeText(context, "Face added!", Toast.LENGTH_SHORT).show(); draftCroppedBitmap = null }
@@ -229,16 +194,24 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
     var fbApiKey by remember { mutableStateOf(prefs.getString("fb_api_key", "") ?: "") }
     var fbAppId by remember { mutableStateOf(prefs.getString("fb_app_id", "") ?: "") }
     
+    // CRITICAL FIX: Resolution Engines
+    var cameraResolution by remember { mutableStateOf(prefs.getInt("camera_resolution", 1080)) }
+    var camResExpanded by remember { mutableStateOf(false) }
+    val camResOptions = listOf(1080, 720, 480, 320)
+
+    var videoResolution by remember { mutableStateOf(prefs.getInt("video_resolution", 720)) }
+    var vidResExpanded by remember { mutableStateOf(false) }
+    val vidResOptions = camResOptions.filter { it <= cameraResolution }
+
     var scanInterval by remember { mutableStateOf(prefs.getFloat("scan_interval_sec", 5f).coerceIn(1f, 60f)) }
     var videoRecordLen by remember { mutableStateOf(prefs.getFloat("video_record_len", 15f).coerceIn(5f, 60f)) }
-    
-    // CRITICAL FIX: Gemma 4 Variable Resolution Token Budget Picker
     var llmResolution by remember { mutableStateOf(prefs.getInt("llm_resolution", 280)) }
     var resExpanded by remember { mutableStateOf(false) }
 
     var popupNotifications by remember { mutableStateOf(prefs.getBoolean("enable_notifications", true)) }
     var llmEnabled by remember { mutableStateOf(prefs.getBoolean("llm_enabled", true)) }
     var faceRecogEnabled by remember { mutableStateOf(prefs.getBoolean("face_recog_enabled", false)) }
+    var debugMode by remember { mutableStateOf(prefs.getBoolean("debug_mode", false)) }
     var aiPrompt by remember { mutableStateOf(prefs.getString("prompt_usr", "Report if you see a clock. If you do not see it, reply EXACTLY with CLEAR.") ?: "") }
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { viewModel.processFaceRegistration(it, context) } }
@@ -248,17 +221,9 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
 
     if (viewModel.draftCroppedBitmap != null) {
         AlertDialog(
-            onDismissRequest = { viewModel.cancelFaceRegistration() },
-            title = { Text("Confirm Face") },
-            text = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                    Image(bitmap = viewModel.draftCroppedBitmap!!.asImageBitmap(), contentDescription = null, modifier = Modifier.size(150.dp).clip(CircleShape))
-                    Spacer(modifier = Modifier.height(16.dp))
-                    OutlinedTextField(value = viewModel.draftFaceName, onValueChange = { viewModel.draftFaceName = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                }
-            },
-            confirmButton = { Button(onClick = { viewModel.confirmFaceRegistration(context) }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { viewModel.cancelFaceRegistration() }) { Text("Cancel") } }
+            onDismissRequest = { viewModel.cancelFaceRegistration() }, title = { Text("Confirm Face") },
+            text = { Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) { Image(bitmap = viewModel.draftCroppedBitmap!!.asImageBitmap(), contentDescription = null, modifier = Modifier.size(150.dp).clip(CircleShape)); Spacer(modifier = Modifier.height(16.dp)); OutlinedTextField(value = viewModel.draftFaceName, onValueChange = { viewModel.draftFaceName = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth()) } },
+            confirmButton = { Button(onClick = { viewModel.confirmFaceRegistration(context) }) { Text("Save") } }, dismissButton = { TextButton(onClick = { viewModel.cancelFaceRegistration() }) { Text("Cancel") } }
         )
     }
 
@@ -274,6 +239,8 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
                 }
             }
             if (appRole == "Viewer") {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Make sure the Camera device is running its live stream before pushing settings.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(onClick = { viewModel.syncToCamera(context, targetIp, securityToken, onSuccess = { Toast.makeText(context, "Settings Synced!", Toast.LENGTH_SHORT).show() }, onError = { Toast.makeText(context, "Sync Failed: $it", Toast.LENGTH_LONG).show() }) }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009688)), modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("📡 PUSH SETTINGS TO CAMERA", fontWeight = FontWeight.Bold) }
             }
@@ -308,16 +275,45 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             HorizontalDivider()
             Spacer(modifier = Modifier.height(24.dp))
 
+            // CRITICAL FIX: Resolution UI Section
+            Text("Camera & Video Quality", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Higher camera resolution improves AI object detection significantly but uses more Wi-Fi bandwidth. The offline video resolution cannot exceed the live camera resolution.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            ExposedDropdownMenuBox(expanded = camResExpanded, onExpandedChange = { camResExpanded = !camResExpanded }) {
+                OutlinedTextField(value = "${cameraResolution}p HD", onValueChange = {}, readOnly = true, label = { Text("Live Camera Resolution") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = camResExpanded) }, modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors())
+                ExposedDropdownMenu(expanded = camResExpanded, onDismissRequest = { camResExpanded = false }) {
+                    camResOptions.forEach { res ->
+                        DropdownMenuItem(text = { Text("${res}p") }, onClick = { 
+                            cameraResolution = res; prefs.edit().putInt("camera_resolution", res).apply()
+                            if (videoResolution > res) { videoResolution = res; prefs.edit().putInt("video_resolution", res).apply() }
+                            camResExpanded = false 
+                        })
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            ExposedDropdownMenuBox(expanded = vidResExpanded, onExpandedChange = { vidResExpanded = !vidResExpanded }) {
+                OutlinedTextField(value = "${videoResolution}p", onValueChange = {}, readOnly = true, label = { Text("Offline Video Recording Resolution") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = vidResExpanded) }, modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors())
+                ExposedDropdownMenu(expanded = vidResExpanded, onDismissRequest = { vidResExpanded = false }) {
+                    vidResOptions.forEach { res -> DropdownMenuItem(text = { Text("${res}p") }, onClick = { videoResolution = res; prefs.edit().putInt("video_resolution", res).apply(); vidResExpanded = false }) }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(24.dp))
+
             Text("Local Biometric Vault", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
+            Text("Upload a photo. The AI will auto-crop the face. Faces are NOT synced remotely.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(12.dp))
             Button(onClick = { photoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("📸 Upload Face Photo") }
             if (faces.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
                 faces.forEach { face ->
-                    Row(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).background(Color(0xFF2C2C2C), RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(face.name, modifier = Modifier.weight(1f), color = Color.White)
-                        IconButton(onClick = { viewModel.removeFace(context, face.id) }) { Text("🗑️", color = Color.Red) }
-                    }
+                    Row(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).background(Color(0xFF2C2C2C), RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Text(face.name, modifier = Modifier.weight(1f), color = Color.White); IconButton(onClick = { viewModel.removeFace(context, face.id) }) { Text("🗑️", color = Color.Red) } }
                 }
             }
 
@@ -326,18 +322,10 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(24.dp))
 
             Text("Device Alerts & AI Tuning", style = MaterialTheme.typography.titleMedium)
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Popup Notifications") }
-                Switch(checked = popupNotifications, onCheckedChange = { popupNotifications = it; prefs.edit().putBoolean("enable_notifications", it).apply() })
-            }
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Enable LLM Engine") }
-                Switch(checked = llmEnabled, onCheckedChange = { llmEnabled = it; prefs.edit().putBoolean("llm_enabled", it).apply() })
-            }
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) { Text("Enable Face Recognition") }
-                Switch(checked = faceRecogEnabled, onCheckedChange = { faceRecogEnabled = it; prefs.edit().putBoolean("face_recog_enabled", it).apply() })
-            }
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Column(modifier = Modifier.weight(1f)) { Text("Popup Notifications") }; Switch(checked = popupNotifications, onCheckedChange = { popupNotifications = it; prefs.edit().putBoolean("enable_notifications", it).apply() }) }
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Column(modifier = Modifier.weight(1f)) { Text("Enable LLM Engine") }; Switch(checked = llmEnabled, onCheckedChange = { llmEnabled = it; prefs.edit().putBoolean("llm_enabled", it).apply() }) }
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Column(modifier = Modifier.weight(1f)) { Text("Enable Face Recognition") }; Switch(checked = faceRecogEnabled, onCheckedChange = { faceRecogEnabled = it; prefs.edit().putBoolean("face_recog_enabled", it).apply() }) }
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { Column(modifier = Modifier.weight(1f)) { Text("Verbose Debug Mode", style = MaterialTheme.typography.bodySmall, color = Color.Gray) }; Switch(checked = debugMode, onCheckedChange = { debugMode = it; prefs.edit().putBoolean("debug_mode", it).apply() }) }
             
             Spacer(modifier = Modifier.height(16.dp))
             Text("Analyze 1 frame every: ${scanInterval.roundToInt()} seconds", style = MaterialTheme.typography.bodyMedium)
@@ -348,30 +336,14 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Slider(value = videoRecordLen, onValueChange = { videoRecordLen = it }, onValueChangeFinished = { prefs.edit().putFloat("video_record_len", videoRecordLen).apply() }, valueRange = 5f..60f)
 
             Spacer(modifier = Modifier.height(24.dp))
-
-            // CRITICAL FIX: Gemma 4 Variable Resolution Token Budget Selector
             Text("Gemma 4 Vision Resolution (Token Budget)", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Higher tokens (1120) allows the AI to zoom in and detect small objects better. Lower tokens (70) is significantly faster but blurrier.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(8.dp))
             ExposedDropdownMenuBox(expanded = resExpanded, onExpandedChange = { resExpanded = !resExpanded }) {
-                OutlinedTextField(
-                    value = "$llmResolution Tokens", 
-                    onValueChange = {}, readOnly = true,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resExpanded) },
-                    modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                )
+                OutlinedTextField(value = "$llmResolution Tokens", onValueChange = {}, readOnly = true, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = resExpanded) }, modifier = Modifier.menuAnchor().fillMaxWidth(), colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors())
                 ExposedDropdownMenu(expanded = resExpanded, onDismissRequest = { resExpanded = false }) {
-                    listOf(70, 140, 280, 560, 1120).forEach { res ->
-                        DropdownMenuItem(
-                            text = { Text("$res Tokens") }, 
-                            onClick = { 
-                                llmResolution = res
-                                prefs.edit().putInt("llm_resolution", res).apply()
-                                resExpanded = false 
-                            }
-                        )
-                    }
+                    listOf(70, 140, 280, 560, 1120).forEach { res -> DropdownMenuItem(text = { Text("$res Tokens") }, onClick = { llmResolution = res; prefs.edit().putInt("llm_resolution", res).apply(); resExpanded = false }) }
                 }
             }
 
@@ -390,13 +362,9 @@ fun SettingsScreen(navController: NavController, viewModel: SettingsViewModel = 
             Spacer(modifier = Modifier.height(8.dp))
             Text("Current model loaded: ${viewModel.currentModelName}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
-            Button(onClick = { filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.isImporting, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { 
-                Text("📁 Import Model from Device (.litertlm)") 
-            }
+            Button(onClick = { filePicker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth(), enabled = !viewModel.isImporting, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Text("📁 Import Model from Device (.litertlm)") }
             Spacer(modifier = Modifier.height(8.dp))
-            Button(onClick = { viewModel.downloadCloudModel(context) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))) { 
-                Text("☁️ Download AI Model") 
-            }
+            Button(onClick = { viewModel.downloadCloudModel(context) }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))) { Text("☁️ Download AI Model") }
             Spacer(modifier = Modifier.height(48.dp))
         }
     }
