@@ -173,8 +173,8 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                         isSavingVideo = false
                                         try {
                                             // MediaCodec requires width/height to be even numbers
-                                            val w = scaledBmp.width - (scaledBmp.width % 16) scaledBmp.width - 1 else scaledBmp.width
-                                            val h = scaledBmp.height - (scaledBmp.height % 16) scaledBmp.height - 1 else scaledBmp.height
+                                            val w = scaledBmp.width - (scaledBmp.width % 16)
+                                            val h = scaledBmp.height - (scaledBmp.height % 16)
                                             dvrEngine.triggerRecording(HybridAIPipeline.activeVideoPath ?: "alert_${now}.mp4", w, h) 
                                         } catch(e: Exception){}
                                     }
