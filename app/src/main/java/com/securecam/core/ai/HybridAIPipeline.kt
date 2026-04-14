@@ -84,18 +84,26 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
         isLlmBusy = true
         val prefs = context.getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
         val confThreshold = prefs.getFloat("confidence_threshold", 0.60f)
-        val basePrompt = prefs.getString("prompt_sys", "You are an AI security camera.") ?: ""
-        val usrPrompt = prefs.getString("prompt_usr", "Report if you see any clock.") ?: ""
-        val enforcedPrompt = "$basePrompt\n\nCRITICAL RULE: Evaluate the image based ONLY on the user's specific trigger. If the requested object/event IS present, reply 'ALERT: <description>'. If NOT present, reply EXACTLY with the word 'CLEAR'. Do not explain yourself."
+        
+        // CRITICAL FIX: Single unified prompt from settings. 
+        val customPrompt = prefs.getString("prompt_usr", "Report if you see a clock. If you do not see it, reply EXACTLY with CLEAR.") ?: ""
 
         try {
             withTimeoutOrNull(15000L) {
                 suspendCancellableCoroutine<Boolean> { continuation ->
-                    llmAnalyzer.analyze(bitmap = bitmap, systemPrompt = enforcedPrompt, userPrompt = usrPrompt, onToken = { },
+                    llmAnalyzer.analyze(
+                        bitmap = bitmap, 
+                        systemPrompt = "You are a visual analysis AI.", // Minimal init prompt so the model focuses purely on customPrompt
+                        userPrompt = customPrompt, 
+                        onToken = { },
                         onDone = { text -> 
                             val output = text.trim()
-                            val isSafe = output.equals("CLEAR", ignoreCase = true) || output.contains("[STATUS_SAFE]", ignoreCase = true)
+                            
+                            // CRITICAL FIX: Kotlin explicitly evaluates if the AI obeyed the CLEAR command
+                            val isSafe = output.equals("CLEAR", ignoreCase = true)
+                            
                             aiScope.launch {
+                                // If safe, no video and no popup (handled by EventRepository/AlertService). Else, video and popup.
                                 val vidPath = if (isSafe) null else "alert_${System.currentTimeMillis()}.mp4"
                                 val finalDesc = if (isSafe) "🔍 SCAN: Safe / No Trigger found" else "🚨 $output"
                                 eventRepository.emitEvent(SecurityEvent("LLM_INSIGHT", finalDesc, confThreshold, vidPath))
