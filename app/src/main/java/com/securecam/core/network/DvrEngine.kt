@@ -47,7 +47,6 @@ class DvrEngine(private val context: Context) {
         try {
             // CRITICAL FIX: lockHardwareCanvas() enables native OS surface rendering, fixing the 0-byte blank video bug
             val canvas = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) surface?.lockHardwareCanvas() else surface?.lockCanvas(null)
-            
             canvas?.drawBitmap(bitmap, 0f, 0f, null)
             surface?.unlockCanvasAndPost(canvas!!)
             drainCodec(false)
