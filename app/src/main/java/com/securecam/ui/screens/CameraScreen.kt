@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight  // CRITICAL FIX: Restored missing compiler import
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -106,22 +107,34 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         val localServer = remember { LocalSignalingServer(8081, securityToken) }
         val apiServer = remember { LocalApiServer(8082, securityToken, context) }
         val latestBitmapRef = remember { java.util.concurrent.atomic.AtomicReference<Bitmap>(null) }
+        
+        // CRITICAL FIX: Flash Logic Tracking. WebRTC defaults to the Front camera initially.
+        var isFrontCamera by remember { mutableStateOf(true) }
         var isFlashActive by remember { mutableStateOf(false) }
         val cameraManager = remember { context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager }
 
-        // CRITICAL FIX: UI Tracking for Video Saving state
         var isCurrentlyRecording by remember { mutableStateOf(false) }
         var isSavingVideo by remember { mutableStateOf(false) }
 
         LaunchedEffect(isFlashActive) {
-            try {
-                val cameraId = cameraManager.cameraIdList.firstOrNull { cameraManager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK } ?: cameraManager.cameraIdList[0]
-                cameraManager.setTorchMode(cameraId, isFlashActive)
-            } catch (e: Exception) {
+            if (isFrontCamera) {
+                // Front Camera: Use Screen Strobe to light up face
                 val window = activity?.window
                 val params = window?.attributes
                 params?.screenBrightness = if (isFlashActive) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
                 window?.attributes = params
+            } else {
+                // Back Camera: Use Physical LED
+                try {
+                    val cameraId = cameraManager.cameraIdList.firstOrNull { cameraManager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK } ?: cameraManager.cameraIdList[0]
+                    cameraManager.setTorchMode(cameraId, isFlashActive)
+                } catch (e: Exception) {
+                    // Fallback to screen strobe just in case WebRTC hard-locks the API
+                    val window = activity?.window
+                    val params = window?.attributes
+                    params?.screenBrightness = if (isFlashActive) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                    window?.attributes = params
+                }
             }
         }
 
@@ -139,7 +152,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             } else { tts?.stop() }
         }
 
-        // CRITICAL FIX: The Video Recording Loop scales the high-res 1080p frame down to the requested Video Resolution to save space
         LaunchedEffect(Unit) {
             while(isActive) {
                 try {
@@ -266,34 +278,14 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                             val bytes = ByteArray(byteBuffer.remaining())
                             byteBuffer.get(bytes)
                             val command = String(bytes, Charsets.UTF_8)
-                            try {
-                                val map = Gson().fromJson(command, Map::class.java)
-                                if (map["type"] == "SYNC_SETTINGS") {
-                                    prefs.edit().apply {
-                                        putFloat("scan_interval_sec", (map["scan_interval_sec"] as Double).toFloat())
-                                        putFloat("video_record_len", (map["video_record_len"] as Double).toFloat())
-                                        putInt("camera_resolution", (map["camera_resolution"] as Double).toInt())
-                                        putInt("video_resolution", (map["video_resolution"] as Double).toInt())
-                                        putInt("llm_resolution", (map["llm_resolution"] as Double).toInt())
-                                        putFloat("confidence_threshold", (map["confidence_threshold"] as Double).toFloat())
-                                        putString("prompt_usr", map["prompt_usr"] as? String ?: "")
-                                        putBoolean("llm_enabled", map["llm_enabled"] as? Boolean ?: true)
-                                        putBoolean("face_recog_enabled", map["face_recog_enabled"] as? Boolean ?: false)
-                                    }.apply()
-                                    CoroutineScope(Dispatchers.Main).launch {
-                                        scanIntervalMs = ((map["scan_interval_sec"] as Double).toFloat() * 1000).toLong()
-                                        alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer. Restart stream to apply resolution.")
-                                    }
-                                    return
-                                }
-                            } catch (e: Exception) {}
                             
                             CoroutineScope(Dispatchers.Main).launch {
                                 when (command) {
                                     "CMD_SIREN" -> { isScreaming = !isScreaming; alertHistory.add(0, "[SYSTEM] Siren toggled.") }
-                                    "CMD_SWITCH_CAM" -> { rtcManager.switchCamera(); alertHistory.add(0, "[SYSTEM] Lens switched.") }
+                                    // CRITICAL FIX: Track which camera is active to toggle proper Flash logic
+                                    "CMD_SWITCH_CAM" -> { isFrontCamera = !isFrontCamera; rtcManager.switchCamera(); alertHistory.add(0, "[SYSTEM] Lens switched.") }
                                     "CMD_FORCE_SCAN" -> { forceScanTrigger++; alertHistory.add(0, "[SYSTEM] Scan forced.") }
-                                    "CMD_FLASH" -> { isFlashActive = !isFlashActive; alertHistory.add(0, "[SYSTEM] Camera LED Flash toggled.") }
+                                    "CMD_FLASH" -> { isFlashActive = !isFlashActive; alertHistory.add(0, "[SYSTEM] Camera Flash toggled.") }
                                 }
                             }
                         }
@@ -327,6 +319,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             firebaseClient?.onJoinReceived = { processJoin("FIREBASE") }
             firebaseClient?.onAnswerReceived = { processOffer(it) }
             firebaseClient?.onIceCandidateReceived = { iceStr -> val data = Gson().fromJson(iceStr, IceCandidateData::class.java); peerConnection?.addIceCandidate(IceCandidate(data.sdpMid, data.sdpMLineIndex, data.sdp)) }
+            
             localServer.onMessageReceived = { jsonStr ->
                 val map = Gson().fromJson(jsonStr, Map::class.java)
                 when (map["type"]) {
@@ -334,6 +327,24 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                     "DISCONNECT" -> { CoroutineScope(Dispatchers.Main).launch { streamStatus = "Listening on WiFi" } }
                     "ANSWER" -> { processOffer(Gson().toJson(mapOf("type" to map["typeSDP"], "sdp" to map["sdp"]))) }
                     "ICE" -> { peerConnection?.addIceCandidate(IceCandidate(map["sdpMid"] as String, (map["sdpMLineIndex"] as Double).toInt(), map["sdp"] as String)) }
+                    // CRITICAL FIX: Settings Sync interceptor added to LocalServer
+                    "SYNC_SETTINGS" -> {
+                        prefs.edit().apply {
+                            (map["scan_interval_sec"] as? Double)?.let { putFloat("scan_interval_sec", it.toFloat()) }
+                            (map["video_record_len"] as? Double)?.let { putFloat("video_record_len", it.toFloat()) }
+                            (map["camera_resolution"] as? Double)?.let { putInt("camera_resolution", it.toInt()) }
+                            (map["video_resolution"] as? Double)?.let { putInt("video_resolution", it.toInt()) }
+                            (map["llm_resolution"] as? Double)?.let { putInt("llm_resolution", it.toInt()) }
+                            (map["confidence_threshold"] as? Double)?.let { putFloat("confidence_threshold", it.toFloat()) }
+                            (map["prompt_usr"] as? String)?.let { putString("prompt_usr", it) }
+                            (map["llm_enabled"] as? Boolean)?.let { putBoolean("llm_enabled", it) }
+                            (map["face_recog_enabled"] as? Boolean)?.let { putBoolean("face_recog_enabled", it) }
+                        }.apply()
+                        CoroutineScope(Dispatchers.Main).launch {
+                            scanIntervalMs = ((map["scan_interval_sec"] as? Double)?.toFloat() ?: 5f).toLong() * 1000
+                            alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer. Please restart stream to apply resolution.")
+                        }
+                    }
                 }
             }
 
@@ -351,8 +362,8 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             }
         }
 
-        Box(modifier = Modifier.fillMaxSize().background(if(isFlashActive) Color.White else Color.Black)) {
-            if(!isFlashActive) AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
+        Box(modifier = Modifier.fillMaxSize().background(if(isFlashActive && isFrontCamera) Color.White else Color.Black)) {
+            if(!(isFlashActive && isFrontCamera)) AndroidView(factory = { localRenderer }, modifier = Modifier.fillMaxSize())
 
             Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0x99000000))) {
@@ -364,7 +375,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                // CRITICAL FIX: "Saving Video" UI Indicator
                 if (isSavingVideo) {
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0x99FFC107))) {
                         Text(text = "💾 Saving Video to Vault...", color = Color.Black, modifier = Modifier.padding(8.dp), fontWeight = FontWeight.Bold)
