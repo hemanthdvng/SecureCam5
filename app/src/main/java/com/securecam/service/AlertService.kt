@@ -39,7 +39,6 @@ class AlertService : Service() {
         
         val prefs = getSharedPreferences("securecam_prefs", Context.MODE_PRIVATE)
 
-        // CAMERA MODE: Local AI Tracking
         serviceScope.launch {
             eventRepository.securityEvents.collect { event ->
                 val appRole = prefs.getString("app_role", "Camera") ?: "Camera"
@@ -52,7 +51,6 @@ class AlertService : Service() {
             }
         }
 
-        // VIEWER MODE: Dynamic HTTP Poller for Offline Logs
         serviceScope.launch {
             while (isActive) {
                 val appRole = prefs.getString("app_role", "Camera") ?: "Camera"
@@ -87,7 +85,6 @@ class AlertService : Service() {
             }
         }
 
-        // VIEWER MODE: Dynamic TCP Listener for Instant Popups
         serviceScope.launch {
             while (isActive) {
                 val appRole = prefs.getString("app_role", "Camera") ?: "Camera"
