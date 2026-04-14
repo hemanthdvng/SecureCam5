@@ -27,6 +27,11 @@ class AlertService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var viewerSocket: Socket? = null
 
+    // CRITICAL FIX: START_STICKY ensures WhatsApp-style persistence so Android automatically reboots the service if closed
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY 
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
