@@ -151,7 +151,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
         LaunchedEffect(Unit) {
             while(isActive) {
                 try {
-                    // CRITICAL FIX: Changed 0.5f to 1.0f to pass raw uncompressed 1080p frame directly to AI and Recording Engine
                     localRenderer.addFrameListener({ bitmap ->
                         try {
                             val bmpCopy = bitmap.copy(Bitmap.Config.ARGB_8888, false)
@@ -172,10 +171,9 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                                         isCurrentlyRecording = true
                                         isSavingVideo = false
                                         try {
-                                            // MediaCodec requires width/height to be even numbers
                                             val w = scaledBmp.width - (scaledBmp.width % 16)
                                             val h = scaledBmp.height - (scaledBmp.height % 16)
-                                            dvrEngine.triggerRecording(HybridAIPipeline.activeVideoPath ?: "alert_${now}.mp4", w, h) 
+                                            dvrEngine.triggerRecording(HybridAIPipeline.activeVideoPath ?: "alert_${now}.mp4", w, h)
                                         } catch(e: Exception){}
                                     }
                                     
@@ -205,10 +203,9 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
             while(isActive) {
                 delay(if (forceScanTrigger > 0) 500 else scanIntervalMs)
                 
-                // CRITICAL FIX: Wait until AI is completely free to prevent traffic jams
+                // CRITICAL FIX: Synchronously wait until AI is free before handing it a new image!
                 while(viewModel.aiPipeline.isBusy() && isActive) { delay(100) }
-                
-                // Grab the absolute freshest live frame
+
                 latestBitmapRef.getAndSet(null)?.let { bmp ->
                     if (!bmp.isRecycled) {
                         try { val copy = bmp.copy(Bitmap.Config.ARGB_8888, false); if (copy != null) { viewModel.aiPipeline.processFrame(copy) } } catch (e: Exception) {}
@@ -227,7 +224,6 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                 alertHistory.add(0, "[$timeStr] $text")
                 if (alertHistory.size > 50) alertHistory.removeLast()
                 
-                // CRITICAL FIX: The Camera now broadcasts the videoPath over the socket so the Viewer gets it instantly
                 localServer.broadcast(Gson().toJson(mapOf("type" to "ALERT", "text" to text, "videoPath" to vidPath)))
                 dataChannel?.let { dc ->
                     if (dc.state() == DataChannel.State.OPEN) { val buffer = ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8)); dc.send(DataChannel.Buffer(buffer, false)) }
@@ -335,16 +331,16 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                             (map["camera_resolution"] as? Double)?.let { putInt("camera_resolution", it.toInt()) }
                             (map["video_resolution"] as? Double)?.let { putInt("video_resolution", it.toInt()) }
                             (map["llm_resolution"] as? Double)?.let { putInt("llm_resolution", it.toInt()) }
-                            (map["ai_backend"] as? String)?.let { putString("ai_backend", it) }
                             (map["confidence_threshold"] as? Double)?.let { putFloat("confidence_threshold", it.toFloat()) }
                             (map["prompt_usr"] as? String)?.let { putString("prompt_usr", it) }
                             (map["llm_enabled"] as? Boolean)?.let { putBoolean("llm_enabled", it) }
                             (map["face_recog_enabled"] as? Boolean)?.let { putBoolean("face_recog_enabled", it) }
+                            (map["ai_backend"] as? String)?.let { putString("ai_backend", it) }
                             (map["authorized_faces"] as? String)?.let { putString("authorized_faces", it) }
                         }.apply()
                         CoroutineScope(Dispatchers.Main).launch {
                             scanIntervalMs = ((map["scan_interval_sec"] as? Double)?.toFloat() ?: 5f).toLong() * 1000
-                            alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer. Please restart stream to apply resolution.")
+                            alertHistory.add(0, "[SYSTEM] Settings Synced from Viewer. Please restart stream to apply changes.")
                         }
                     }
                 }
