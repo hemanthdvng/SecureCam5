@@ -7,49 +7,39 @@ import fi.iki.elonen.NanoHTTPD
 import java.io.File
 import java.io.FileInputStream
 
-// CRITICAL FIX: Corrected import to fi.iki.elonen and decoupled from Room DAO to guarantee successful compilation
 class LocalApiServer(port: Int, val token: String, val context: Context) : NanoHTTPD(port) {
     override fun serve(session: IHTTPSession): Response {
         if (session.parameters["token"]?.firstOrNull() != token) return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized")
         return when (session.uri) {
             "/api/logs" -> { 
                 try {
-                    val dbFolder = context.getDatabasePath("dummy").parentFile
-                    val dbs = dbFolder?.listFiles { _, name -> name.endsWith(".db") && !name.contains("google") }
-                    val activeDb = dbs?.firstOrNull()
-                    if (activeDb == null) return newFixedLengthResponse(Response.Status.OK, "application/json", "[]")
+                    // CRITICAL FIX: The Room Database is always named "securecam_db" exactly. This hardcoded fix guarantees Viewer sync works offline.
+                    val activeDb = context.getDatabasePath("securecam_db")
+                    if (!activeDb.exists()) return newFixedLengthResponse(Response.Status.OK, "application/json", "[]")
 
                     val db = SQLiteDatabase.openDatabase(activeDb.absolutePath, null, SQLiteDatabase.OPEN_READWRITE)
                     if (session.method == Method.DELETE) {
                         val id = session.parameters["id"]?.firstOrNull()
-                        if (id != null) {
-                            val c = db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name!='android_metadata' AND name!='sqlite_sequence' AND name!='room_master_table'", null)
-                            if (c.moveToFirst()) db.execSQL("DELETE FROM ${c.getString(0)} WHERE id = $id")
-                            c.close()
-                        }
+                        if (id != null) db.execSQL("DELETE FROM security_logs WHERE id = $id")
                         db.close()
                         newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Deleted")
                     } else {
                         val logs = mutableListOf<Map<String, Any?>>()
-                        val c = db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name!='android_metadata' AND name!='sqlite_sequence' AND name!='room_master_table'", null)
-                        if (c.moveToFirst()) {
-                            val dc = db.rawQuery("SELECT * FROM ${c.getString(0)} ORDER BY logTime DESC", null)
-                            val cols = dc.columnNames
-                            while (dc.moveToNext()) {
-                                val m = mutableMapOf<String, Any?>()
-                                for (i in cols.indices) {
-                                    when (dc.getType(i)) {
-                                        android.database.Cursor.FIELD_TYPE_INTEGER -> m[cols[i]] = dc.getLong(i)
-                                        android.database.Cursor.FIELD_TYPE_FLOAT -> m[cols[i]] = dc.getFloat(i)
-                                        android.database.Cursor.FIELD_TYPE_STRING -> m[cols[i]] = dc.getString(i)
-                                        else -> m[cols[i]] = null
-                                    }
+                        val dc = db.rawQuery("SELECT * FROM security_logs ORDER BY logTime DESC", null)
+                        val cols = dc.columnNames
+                        while (dc.moveToNext()) {
+                            val m = mutableMapOf<String, Any?>()
+                            for (i in cols.indices) {
+                                when (dc.getType(i)) {
+                                    android.database.Cursor.FIELD_TYPE_INTEGER -> m[cols[i]] = dc.getLong(i)
+                                    android.database.Cursor.FIELD_TYPE_FLOAT -> m[cols[i]] = dc.getFloat(i)
+                                    android.database.Cursor.FIELD_TYPE_STRING -> m[cols[i]] = dc.getString(i)
+                                    else -> m[cols[i]] = null
                                 }
-                                logs.add(m)
                             }
-                            dc.close()
+                            logs.add(m)
                         }
-                        c.close()
+                        dc.close()
                         db.close()
                         newFixedLengthResponse(Response.Status.OK, "application/json", Gson().toJson(logs))
                     }
