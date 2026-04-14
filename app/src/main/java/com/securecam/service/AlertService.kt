@@ -7,13 +7,19 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.securecam.data.local.LogDatabase
+import com.securecam.data.local.SecurityLogEntity
 import com.securecam.data.repository.EventRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import java.net.Socket
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
+import androidx.room.Room
 
 @AndroidEntryPoint
 class AlertService : Service() {
@@ -39,7 +45,39 @@ class AlertService : Service() {
                 }
             }
         } else if (appRole == "Viewer") {
-            // CRITICAL FIX: Persistent Background TCP Listener for Viewer Notifications
+            // CRITICAL FIX: Background HTTP Poller that quietly syncs old logs to the Viewer's local database
+            serviceScope.launch {
+                while (isActive) {
+                    try {
+                        val ip = prefs.getString("target_ip", "") ?: ""
+                        val token = prefs.getString("security_token", "") ?: ""
+                        if (ip.isNotBlank()) {
+                            val url = URL("http://$ip:8082/api/logs?token=$token")
+                            val connection = url.openConnection() as HttpURLConnection
+                            connection.connectTimeout = 5000
+                            if (connection.responseCode == 200) {
+                                val json = connection.inputStream.bufferedReader().readText()
+                                val type = object : TypeToken<List<SecurityLogEntity>>() {}.type
+                                val remoteLogs: List<SecurityLogEntity> = Gson().fromJson(json, type)
+                                
+                                val db = Room.databaseBuilder(applicationContext, LogDatabase::class.java, "securecam_db").build()
+                                val localLogs = db.logDao().getAllLogsSync()
+                                val localIds = localLogs.map { it.logTime }.toSet()
+                                
+                                remoteLogs.forEach { log ->
+                                    if (!localIds.contains(log.logTime)) {
+                                        db.logDao().insertLog(log)
+                                    }
+                                }
+                                db.close()
+                            }
+                        }
+                    } catch(e: Exception){}
+                    delay(15000) // Background syncs every 15 seconds
+                }
+            }
+
+            // Real-time TCP Listener for Instant Popups and DB Insertion
             serviceScope.launch {
                 while (isActive) {
                     try {
@@ -52,7 +90,19 @@ class AlertService : Service() {
                                 val map = Gson().fromJson(line, Map::class.java)
                                 if (map["type"] == "ALERT") {
                                     val text = map["text"] as? String ?: ""
+                                    val vidPath = map["videoPath"] as? String
                                     val isSafe = text.contains("Safe", ignoreCase = true) || text.contains("CLEAR", ignoreCase = true)
+                                    
+                                    val db = Room.databaseBuilder(applicationContext, LogDatabase::class.java, "securecam_db").build()
+                                    db.logDao().insertLog(SecurityLogEntity(
+                                        logTime = System.currentTimeMillis(),
+                                        type = if(text.contains("Face")) "BIOMETRIC" else "LLM_INSIGHT",
+                                        description = text,
+                                        confidence = 1.0f,
+                                        videoPath = vidPath
+                                    ))
+                                    db.close()
+
                                     if (!isSafe && !text.contains("[SYSTEM]")) {
                                         showPopupNotification(text)
                                     }
@@ -60,7 +110,7 @@ class AlertService : Service() {
                             }
                         }
                     } catch (e: Exception) {}
-                    delay(5000) // If disconnected, retry every 5 seconds
+                    delay(5000)
                 }
             }
         }
