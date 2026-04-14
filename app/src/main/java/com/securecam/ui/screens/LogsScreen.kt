@@ -28,6 +28,8 @@ import kotlinx.coroutines.withContext
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import androidx.room.Room
+import com.securecam.data.local.LogDatabase
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -46,17 +48,24 @@ fun LogsScreen(navController: NavController) {
     var logs by remember { mutableStateOf<List<SecurityLogEntity>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var selectedVideoUrl by remember { mutableStateOf<String?>(null) }
-    
+    var selectedVideoLocalPath by remember { mutableStateOf<String?>(null) }
     var selectedTabIndex by remember { mutableStateOf(0) }
     val tabs = listOf("All", "Alerts", "Faces", "Normal")
-
     val coroutineScope = rememberCoroutineScope()
 
     fun fetchLogs() {
         isLoading = true
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                if (appRole == "Viewer" && targetIp.isNotBlank()) {
+                // CRITICAL FIX: If running on Camera device, grab directly from Room database! Bypass network.
+                if (appRole == "Camera") {
+                    val db = Room.databaseBuilder(context, LogDatabase::class.java, "securecam_db").build()
+                    val localLogs = db.logDao().getAllLogsSync()
+                    db.close()
+                    withContext(Dispatchers.Main) { logs = localLogs }
+                } 
+                // If running on Viewer device, fetch remotely via network
+                else if (appRole == "Viewer" && targetIp.isNotBlank()) {
                     val url = URL("http://$targetIp:8082/api/logs?token=$token")
                     val connection = url.openConnection() as HttpURLConnection
                     connection.connectTimeout = 5000
@@ -80,7 +89,12 @@ fun LogsScreen(navController: NavController) {
     fun deleteLog(id: Int) {
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                if (appRole == "Viewer" && targetIp.isNotBlank()) {
+                if (appRole == "Camera") {
+                    val db = Room.databaseBuilder(context, LogDatabase::class.java, "securecam_db").build()
+                    db.logDao().deleteLogById(id)
+                    db.close()
+                    fetchLogs()
+                } else if (appRole == "Viewer" && targetIp.isNotBlank()) {
                     val url = URL("http://$targetIp:8082/api/logs?token=$token&id=$id")
                     val connection = url.openConnection() as HttpURLConnection
                     connection.requestMethod = "DELETE"
@@ -102,42 +116,43 @@ fun LogsScreen(navController: NavController) {
         }
     }
 
-    if (selectedVideoUrl != null) {
+    if (selectedVideoUrl != null || selectedVideoLocalPath != null) {
         AlertDialog(
-            onDismissRequest = { selectedVideoUrl = null },
+            onDismissRequest = { selectedVideoUrl = null; selectedVideoLocalPath = null },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
             modifier = Modifier.fillMaxSize().padding(16.dp),
             text = {
-                val exoPlayer = remember { ExoPlayer.Builder(context).build().apply {
-                    setMediaItem(MediaItem.fromUri(selectedVideoUrl!!))
-                    prepare()
-                    playWhenReady = true
-                }}
+                val exoPlayer = remember { 
+                    ExoPlayer.Builder(context).build().apply { 
+                        val mediaItem = if (selectedVideoUrl != null) MediaItem.fromUri(selectedVideoUrl!!) 
+                                        else MediaItem.fromUri(java.io.File(context.filesDir, selectedVideoLocalPath!!).toURI())
+                        setMediaItem(mediaItem)
+                        prepare()
+                        playWhenReady = true 
+                    }
+                }
                 DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
                 AndroidView(factory = { PlayerView(context).apply { player = exoPlayer } }, modifier = Modifier.fillMaxSize())
             },
-            confirmButton = { TextButton(onClick = { selectedVideoUrl = null }) { Text("Close Video", color = Color.Red) } }
+            confirmButton = { TextButton(onClick = { selectedVideoUrl = null; selectedVideoLocalPath = null }) { Text("Close Video", color = Color.Red) } }
         )
     }
 
-    Scaffold(
-        topBar = { TopAppBar(title = { Text("Security Vault") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }, actions = { IconButton(onClick = { fetchLogs() }) { Text("🔄") } }) }
-    ) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Security Vault") }, navigationIcon = { TextButton(onClick = { navController.popBackStack() }) { Text("Back") } }, actions = { IconButton(onClick = { fetchLogs() }) { Text("🔄") } }) }) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             TabRow(selectedTabIndex = selectedTabIndex) {
                 tabs.forEachIndexed { index, title -> Tab(selected = selectedTabIndex == index, onClick = { selectedTabIndex = index }, text = { Text(title) }) }
             }
-            if (isLoading) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            } else if (filteredLogs.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No logs found.", color = Color.Gray) }
+            if (isLoading) { 
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() } 
+            } else if (filteredLogs.isEmpty()) { 
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No logs found.", color = Color.Gray) } 
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     items(filteredLogs) { log ->
                         val isSafe = log.description.contains("Safe", ignoreCase = true)
                         val bgColor = if (isSafe) Color(0x224CAF50) else Color(0x22F44336)
                         val timeStr = SimpleDateFormat("MMM dd, hh:mm a", Locale.getDefault()).format(Date(log.logTime))
-                        
                         Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), colors = CardDefaults.cardColors(containerColor = bgColor)) {
                             Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(modifier = Modifier.weight(1f)) {
@@ -148,7 +163,10 @@ fun LogsScreen(navController: NavController) {
                                 if (log.videoPath != null) {
                                     IconButton(onClick = { 
                                         if (appRole == "Viewer") selectedVideoUrl = "http://$targetIp:8082/api/video?file=${log.videoPath}&token=$token" 
-                                    }) { Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp)) }
+                                        else selectedVideoLocalPath = log.videoPath
+                                    }) {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+                                    }
                                 }
                                 IconButton(onClick = { deleteLog(log.id) }) { Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red) }
                             }
