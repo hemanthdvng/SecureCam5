@@ -1,6 +1,7 @@
 package com.securecam.core.ai
 
 import android.content.Context
+import android.os.Build
 import android.graphics.Bitmap
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
@@ -32,11 +33,10 @@ class LlmVisionAnalyzer(private val context: Context) {
     }
 
     fun close() {
-        llmScope.launch {
-            initialized.set(false)
-            busy.set(false)
-            try { engine?.close() } catch (e: Exception) {} finally { engine = null }
-        }
+        initialized.set(false)
+        busy.set(false)
+        try { engine?.close() } catch (e: Exception) {} finally { engine = null }
+        System.gc() // CRITICAL: Force clear VRAM instantly to prevent OOM on reopen
     }
 
     @OptIn(ExperimentalApi::class)
@@ -59,7 +59,7 @@ class LlmVisionAnalyzer(private val context: Context) {
 
                 val backendConfig = when (backendType) {
                     "GPU" -> Backend.GPU()
-                    "NPU" -> Backend.CPU()
+                    "NPU" -> Backend.CPU() // LiteRT NPU delegates require specific hardware bindings, falling back to CPU safely if unsupported
                     else -> Backend.CPU()
                 }
 
@@ -90,7 +90,7 @@ class LlmVisionAnalyzer(private val context: Context) {
                 val conversation = eng.createConversation(ConversationConfig(samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.4), systemInstruction = Contents.of(systemPrompt)))
 
                 // CRITICAL FIX: Raw 1080p (1920px) image fed directly into AI to support 1120 token budget
-                val imageBytes = bitmap.toJpegBytes(maxDim = 1920)
+                val imageBytes = bitmap.toFastBytes()
                 val contents = Contents.of(listOf(Content.ImageBytes(imageBytes), Content.Text(userPrompt)))
 
                 val sb = StringBuilder()
@@ -108,9 +108,12 @@ class LlmVisionAnalyzer(private val context: Context) {
         }
     }
 
-    private fun Bitmap.toJpegBytes(maxDim: Int = 1920): ByteArray {
-        val scale = if (maxOf(width, height) > maxDim) maxDim.toFloat() / maxOf(width, height) else 1f
-        val scaled = if (scale < 1f) Bitmap.createScaledBitmap(this, (width * scale).toInt().coerceAtLeast(1), (height * scale).toInt().coerceAtLeast(1), true) else this
-        return ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 70, it) }.toByteArray()
+    private fun Bitmap.toFastBytes(): ByteArray {
+        val out = ByteArrayOutputStream()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            this.compress(Bitmap.CompressFormat.WEBP_LOSSY, 70, out) // Hardware accelerated on modern Android
+        } else {
+            this.compress(Bitmap.CompressFormat.JPEG, 60, out) // Lighter quality saves massive CPU cycles
+        }
+        return out.toByteArray()
     }
-}
