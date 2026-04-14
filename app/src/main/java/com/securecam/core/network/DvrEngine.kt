@@ -37,4 +37,16 @@ class DvrEngine(private val context: Context) {
             } catch(e: Exception){}
         }
     }
+
+    fun stopRecording() {
+        try {
+            this.javaClass.declaredFields.forEach { field ->
+                field.isAccessible = true
+                val obj = field.get(this)
+                if (obj is android.media.MediaMuxer) { obj.stop(); obj.release(); field.set(this, null) }
+                if (obj is android.media.MediaCodec) { obj.stop(); obj.release(); field.set(this, null) }
+            }
+            this.javaClass.declaredFields.find { it.name == "isRecording" }?.let { it.isAccessible = true; it.set(this, false) }
+        } catch(e: Exception) {}
+    }
 }
