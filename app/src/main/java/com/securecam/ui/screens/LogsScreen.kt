@@ -20,7 +20,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavController
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import com.securecam.data.local.LogDao
 import com.securecam.data.local.SecurityLogEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -57,14 +56,12 @@ fun LogsScreen(navController: NavController) {
         isLoading = true
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                // CRITICAL FIX: If running on Camera device, grab directly from Room database! Bypass network.
                 if (appRole == "Camera") {
                     val db = Room.databaseBuilder(context, LogDatabase::class.java, "securecam_db").build()
                     val localLogs = db.logDao().getAllLogsSync()
                     db.close()
                     withContext(Dispatchers.Main) { logs = localLogs }
                 } 
-                // If running on Viewer device, fetch remotely via network
                 else if (appRole == "Viewer" && targetIp.isNotBlank()) {
                     val url = URL("http://$targetIp:8082/api/logs?token=$token")
                     val connection = url.openConnection() as HttpURLConnection
@@ -124,8 +121,9 @@ fun LogsScreen(navController: NavController) {
             text = {
                 val exoPlayer = remember { 
                     ExoPlayer.Builder(context).build().apply { 
+                        // CRITICAL FIX: Appended .toString() to the java.net.URI to perfectly match ExoPlayer's required String type
                         val mediaItem = if (selectedVideoUrl != null) MediaItem.fromUri(selectedVideoUrl!!) 
-                                        else MediaItem.fromUri(java.io.File(context.filesDir, selectedVideoLocalPath!!).toURI())
+                                        else MediaItem.fromUri(java.io.File(context.filesDir, selectedVideoLocalPath!!).toURI().toString())
                         setMediaItem(mediaItem)
                         prepare()
                         playWhenReady = true 
