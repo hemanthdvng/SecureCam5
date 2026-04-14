@@ -25,12 +25,12 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
     private val biometricEngine = BiometricEngine(context)
     private var isLlmBusy = false
 
-    // CRITICAL FIX: The Rolling Timer prevents simultaneous overlapping alerts from creating duplicate blank videos
     companion object {
         var activeVideoPath: String? = null
         var activeVideoEndTime: Long = 0L
     }
 
+    // CRITICAL FIX: Expose busy state to prevent camera loop traffic jams
     fun isBusy(): Boolean = isLlmBusy
 
     fun start() {
@@ -75,7 +75,6 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
                                 if (recognizedNames.isNotEmpty()) {
                                     val namesList = recognizedNames.joinToString(", ")
                                     
-                                    // Rolling Timer Logic for Faces
                                     val now = System.currentTimeMillis()
                                     val recordLenMs = (prefs.getFloat("video_record_len", 15f) * 1000).toLong()
                                     if (now > activeVideoEndTime) { activeVideoPath = "face_${now}.mp4" }
@@ -101,7 +100,7 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
         val confThreshold = prefs.getFloat("confidence_threshold", 0.60f)
         val customPrompt = prefs.getString("prompt_usr", "Report if you see a clock. If you do not see it, reply EXACTLY with CLEAR.") ?: ""
         val recordLenMs = (prefs.getFloat("video_record_len", 15f) * 1000).toLong()
-        val llmResolution = prefs.getInt("llm_resolution", 280) // Captures token budget from settings
+        val llmResolution = prefs.getInt("llm_resolution", 280) 
 
         try {
             withTimeoutOrNull(15000L) {
@@ -119,7 +118,6 @@ class HybridAIPipeline @Inject constructor(@ApplicationContext private val conte
                             aiScope.launch {
                                 val now = System.currentTimeMillis()
                                 if (!isSafe) {
-                                    // Rolling Timer Logic for AI Threats
                                     if (now > activeVideoEndTime) {
                                         activeVideoPath = "alert_${now}.mp4"
                                     }
