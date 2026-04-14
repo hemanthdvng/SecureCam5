@@ -330,6 +330,7 @@ fun CameraScreen(navController: NavController, viewModel: CameraViewModel = hilt
                             (map["camera_resolution"] as? Double)?.let { putInt("camera_resolution", it.toInt()) }
                             (map["video_resolution"] as? Double)?.let { putInt("video_resolution", it.toInt()) }
                             (map["llm_resolution"] as? Double)?.let { putInt("llm_resolution", it.toInt()) }
+                            (map["ai_backend"] as? String)?.let { putString("ai_backend", it) }
                             (map["confidence_threshold"] as? Double)?.let { putFloat("confidence_threshold", it.toFloat()) }
                             (map["prompt_usr"] as? String)?.let { putString("prompt_usr", it) }
                             (map["llm_enabled"] as? Boolean)?.let { putBoolean("llm_enabled", it) }
