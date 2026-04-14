@@ -1,6 +1,7 @@
 package com.securecam.ui.screens
 
 import android.content.Context
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -121,9 +122,9 @@ fun LogsScreen(navController: NavController) {
             text = {
                 val exoPlayer = remember { 
                     ExoPlayer.Builder(context).build().apply { 
-                        // CRITICAL FIX: Appended .toString() to the java.net.URI to perfectly match ExoPlayer's required String type
+                        // CRITICAL FIX: Correctly formats local File path for ExoPlayer without URI type crashes
                         val mediaItem = if (selectedVideoUrl != null) MediaItem.fromUri(selectedVideoUrl!!) 
-                                        else MediaItem.fromUri(java.io.File(context.filesDir, selectedVideoLocalPath!!).toURI().toString())
+                                        else MediaItem.fromUri(Uri.fromFile(java.io.File(context.filesDir, selectedVideoLocalPath!!)).toString())
                         setMediaItem(mediaItem)
                         prepare()
                         playWhenReady = true 
